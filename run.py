@@ -291,7 +291,9 @@ if __name__ == "__main__":
     args.output_path = Path(args.output_path).absolute()
     args.output_path.mkdir(parents=True, exist_ok=True)
 
-    logging.basicConfig(level=logging.INFO, filename=args.output_path / "run.log")
+    logging.basicConfig(level=logging.INFO, filename=args.output_path / "run.log", 
+                        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S")
 
     main_loop(
         dataset=args.dataset,

@@ -14,7 +14,7 @@ from typing import Tuple
 from collections import Counter
 
 try:
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification, DistilBertTokenizerFast
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
@@ -152,7 +152,7 @@ class TextAutoML:
             )
 
         elif self.approach in ['lstm', 'transformer']:
-            model_name = 'distilbert-base-uncased'
+            model_name = 'distilbert-base-cased'
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.vocab_size = self.tokenizer.vocab_size
             dataset = SimpleTextDataset(
