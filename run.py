@@ -21,7 +21,7 @@ import numpy as np
 from pathlib import Path
 from sklearn.metrics import accuracy_score, classification_report
 import yaml
-
+from wandb_log import get_logger
 from automl.core import TextAutoML
 from automl.datasets import (
     AGNewsDataset,
@@ -54,7 +54,9 @@ def main_loop(
         fraction_layers_to_finetune: float = 1.0,
         data_fraction: int = 1.0,
         load_path: Path = None,
+        is_mtl: bool = False,
     ) -> None:
+    
     match dataset:
         case "ag_news":
             dataset_class = AGNewsDataset
@@ -66,6 +68,20 @@ def main_loop(
             dataset_class = DBpediaDataset
         case _:
             raise ValueError(f"Invalid dataset: {dataset}")
+    
+    dataset_classes = [dataset_class]
+
+    if is_mtl:
+        dataset_classes = [
+            AGNewsDataset,
+            IMDBDataset,
+            AmazonReviewsDataset,
+            DBpediaDataset,
+        ]
+        dataset = "mtl"
+
+    run_name = f"{dataset}_seed={seed}_approach={approach}"
+    # logger = get_logger(log_dir=Path(output_path) / run_name, run_name=run_name)
 
     logger.info("Fitting Text AutoML")
 
@@ -275,8 +291,6 @@ if __name__ == "__main__":
         help="Subsampling of training set, in fraction (0, 1]."
     )
     args = parser.parse_args()
-
-    logger.info(f"Running text dataset {args.dataset}\n{args}")
 
     if args.output_path is None:
         args.output_path =  (

@@ -12,6 +12,7 @@ from pathlib import Path
 import logging
 from typing import Tuple
 from collections import Counter
+from automl.normalization import remove_markdowns
 
 try:
     from transformers import AutoTokenizer, AutoModelForSequenceClassification, DistilBertTokenizerFast
@@ -134,6 +135,7 @@ class TextAutoML:
                 max_df=0.8,  # ignore words appearing in > 80% of sentences
                 sublinear_tf=True,  # use log-spaced term-frequency scoring
             )
+            # self.train_texts = [remove_markdowns(text) for text in self.train_texts]
             X = self.vectorizer.fit_transform(self.train_texts).toarray()
             dataset = torch.utils.data.TensorDataset(
                 torch.tensor(X, dtype=torch.float32),

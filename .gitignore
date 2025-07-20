@@ -12,3 +12,5 @@ results/
 data/
 *logs/
 neps_results/
+
+output/

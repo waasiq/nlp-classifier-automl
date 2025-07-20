@@ -11,7 +11,6 @@ from .datasets import (
     DBpediaDataset,
 )
 
-
 __all__ = [
     'TextAutoML',
     'SimpleFFNN',

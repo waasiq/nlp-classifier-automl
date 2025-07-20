@@ -23,6 +23,7 @@ pyarrow = ">=12.0"       # Arrow format support
 neural-pipeline-search = "0.13.0"
 datasets = ">=2.0"
 transformers =  ">=4.20"
+wandb = ">=0.21.0"
 
 
 [build-system]
