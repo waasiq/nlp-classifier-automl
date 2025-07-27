@@ -13,7 +13,7 @@ import logging
 from typing import Tuple
 from collections import Counter
 from automl.normalization import remove_markdowns
-
+import random
 try:
     from transformers import AutoTokenizer, AutoModelForSequenceClassification, DistilBertTokenizerFast
     TRANSFORMERS_AVAILABLE = True
@@ -68,9 +68,9 @@ class TextAutoML:
 
     def fit(
         self,
-        train_df: pd.DataFrame,
-        val_df: pd.DataFrame,
-        num_classes: int,
+        train_dfs: dict[str, pd.DataFrame],
+        val_dfs: dict[str, pd.DataFrame],
+        num_classes: dict[str, int],
         approach=None,
         vocab_size=None,
         token_length=None,
@@ -118,13 +118,15 @@ class TextAutoML:
         
         logger.info("Loading and preparing data...")
 
-        self.train_texts = train_df['text'].tolist()
-        self.train_labels = train_df['label'].tolist()
-        self.val_texts = val_df['text'].tolist()
-        self.val_labels = val_df['label'].tolist()
+        self.train_texts = {dataset: train_df['text'].tolist() for dataset, train_df in train_dfs.items()}
+        self.train_labels = {dataset: train_df['label'].tolist() for dataset, train_df in train_dfs.items()}
+        self.val_texts = {dataset: val_df['text'].tolist() for dataset, val_df in val_dfs.items()}
+        self.val_labels = {dataset: val_df['label'].tolist() for dataset, val_df in val_dfs.items()}
         self.num_classes = num_classes
-        logger.info(f"Train class distribution: {Counter(self.train_labels)}")
-        logger.info(f"Val class distribution: {Counter(self.val_labels)}")
+        train_class_dist = {dataset: Counter(train_label) for dataset, train_label  in self.train_labels.items()}
+        val_class_dist = {dataset: Counter(val_label) for dataset, val_label  in self.val_labels.items()}
+        logger.info(f"Train class distribution: {train_class_dist}")
+        logger.info(f"Val class distribution: {val_class_dist}")
 
         dataset = None
         if self.approach == 'tfidf':
@@ -157,14 +159,25 @@ class TextAutoML:
             model_name = 'distilbert-base-cased'
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.vocab_size = self.tokenizer.vocab_size
-            dataset = SimpleTextDataset(
-                self.train_texts, self.train_labels, self.tokenizer, self.token_length
-            )
-            train_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-            _dataset = SimpleTextDataset(
-                self.val_texts, self.val_labels, self.tokenizer, self.token_length
-            )
-            val_loader = DataLoader(_dataset, batch_size=self.batch_size, shuffle=True)
+            datasets = {
+                task: SimpleTextDataset(
+                    self.train_texts[task], self.train_labels[task], self.tokenizer, self.token_length
+                ) for task in self.train_texts.keys()
+            }
+            train_loaders = {
+                task:
+                DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+                for task, dataset in datasets.items()
+            }
+            _datasets = {
+                task: SimpleTextDataset(
+                    self.val_texts[task], self.val_labels[task], self.tokenizer, self.token_length
+                ) for task in self.val_texts.keys()
+            }
+            val_loaders = {
+                task: DataLoader(_dataset, batch_size=self.batch_size, shuffle=True)
+                    for task, _dataset in _datasets.items()
+            }
 
             match self.approach:
                 case "lstm":
@@ -193,11 +206,11 @@ class TextAutoML:
         
         # Training and validating
         self.model.to(self.device)
-        assert dataset is not None, f"`dataset` cannot be None here!"
+        # assert dataset is not None, f"`dataset` cannot be None here!"
         # loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
         val_acc = self._train_loop(
-            train_loader,
-            val_loader,
+            train_loaders,
+            val_loaders,
             load_path=load_path,
             save_path=save_path,
         )
@@ -206,8 +219,8 @@ class TextAutoML:
 
     def _train_loop(
         self, 
-        train_loader: DataLoader,
-        val_loader: DataLoader,
+        train_loaders: dict[str, DataLoader],
+        val_loaders: dict[str, DataLoader],
         load_path: Path=None,
         save_path: Path=None,
     ):
@@ -224,8 +237,17 @@ class TextAutoML:
             logger.info(f"Resuming from checkpoint at {start_epoch}")
 
         for epoch in range(start_epoch, self.epochs):            
+            train_iters = {task: iter(loader) for task, loader in train_loaders.items()}
             total_loss = 0
-            for batch in train_loader:
+            while len(train_iters.keys()) > 0:
+                task = random.choice(list(train_iters))
+                try:
+                    batch = next(train_iters[task])
+                except StopIteration as e:
+                    logger.info(f"completed one iteration over {task} datset. {repr(e)}")
+                    train_iters.pop(task, None)
+                    continue
+                        
                 self.model.train()
                 optimizer.zero_grad()
 
@@ -243,7 +265,7 @@ class TextAutoML:
                             labels = y
                         case "lstm" | "transformer":
                             inputs = {k: v.to(self.device) for k, v in batch.items()}
-                            outputs = self.model(**inputs)
+                            outputs = self.model(**inputs, task=task)
                             labels = inputs["labels"]
                         case _:
                             raise ValueError("Oops! Wrong approach.")
@@ -257,14 +279,14 @@ class TextAutoML:
             logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
 
             if self.val_texts:
-                val_preds, val_labels = self._predict(val_loader)
+                val_preds, val_labels = self._predict(val_loaders[task], task)
                 val_acc = accuracy_score(val_labels, val_preds)
-                logger.info(f"Epoch {epoch + 1}, Validation Accuracy: {val_acc:.4f}")
+                logger.info(f"Epoch {epoch + 1}, Validation Accuracy for dataset {task} is: {val_acc:.4f}")
 
-        if self.val_texts:
-            val_preds, val_labels = self._predict(val_loader)
-            val_acc = accuracy_score(val_labels, val_preds)
-            logger.info(f"Epoch {epoch + 1}, Validation Accuracy: {val_acc:.4f}")
+        # if self.val_texts:
+        #     val_preds, val_labels = self._predict(val_loader)
+        #     val_acc = accuracy_score(val_labels, val_preds)
+        #     logger.info(f"Epoch {epoch + 1}, Validation Accuracy: {val_acc:.4f}")
 
         if save_path is not None:
             save_path = Path(save_path) if not isinstance(save_path, Path) else save_path
@@ -281,7 +303,7 @@ class TextAutoML:
         torch.cuda.empty_cache()
         return val_acc or 0.0
 
-    def _predict(self, val_loader: DataLoader):
+    def _predict(self, val_loader: DataLoader, task):
         self.model.eval()
         preds = []
         labels = []
@@ -299,7 +321,7 @@ class TextAutoML:
                             labels.extend(y)
                         case "lstm" | "transformer":
                             inputs = {k: v.to(self.device) for k, v in batch.items()}
-                            outputs = self.model(**inputs)
+                            outputs = self.model(**inputs, task=task)
                             outputs = outputs.logits if self.approach == "transformer" else outputs
                             labels.extend(inputs["labels"])
                         case _:
@@ -315,13 +337,13 @@ class TextAutoML:
             return preds.cpu().numpy(), labels.cpu().numpy()
 
 
-    def predict(self, test_data: pd.DataFrame | DataLoader) -> Tuple[np.ndarray, np.ndarray]:
+    def predict(self, test_data: pd.DataFrame | DataLoader, task) -> Tuple[np.ndarray, np.ndarray]:
 
         assert isinstance(test_data, DataLoader) or isinstance(test_data, pd.DataFrame), \
             f"Input data type: {type(test_data)}; Expected: pd.DataFrame | DataLoader"
 
         if isinstance(test_data, DataLoader):
-            return self._predict(test_data)
+            return self._predict(test_data, task)
         
         if self.approach == 'tfidf':
             _X = self.vectorizer.transform(test_data['text'].tolist()).toarray()
@@ -343,7 +365,7 @@ class TextAutoML:
             raise ValueError(f"Unrecognized approach: {self.approach}")
             # handling any possible tokenization
         
-        return self._predict(_loader)
+        return self._predict(_loader, task)
 
 
 def freeze_layers(model, fraction_layers_to_finetune: float=1.0) -> None:

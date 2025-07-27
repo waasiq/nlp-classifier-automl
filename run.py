@@ -69,15 +69,15 @@ def main_loop(
         case _:
             raise ValueError(f"Invalid dataset: {dataset}")
     
-    dataset_classes = [dataset_class]
+    dataset_classes = {dataset: dataset_class}
 
     if is_mtl:
-        dataset_classes = [
-            AGNewsDataset,
-            IMDBDataset,
-            AmazonReviewsDataset,
-            DBpediaDataset,
-        ]
+        dataset_classes = {
+            "ag_news": AGNewsDataset,
+            "imdb": IMDBDataset,
+            "amazon": AmazonReviewsDataset,
+            "dbpedia": DBpediaDataset,
+        }
         dataset = "mtl"
 
     run_name = f"{dataset}_seed={seed}_approach={approach}"
@@ -92,21 +92,24 @@ def main_loop(
 
     # Get the dataset and create dataloaders
     data_path = Path(data_path) if isinstance(data_path, str) else data_path
-    data_info = dataset_class(data_path).create_dataloaders(val_size=val_size, random_state=seed)
-    train_df = data_info['train_df']
+    data_infos = {dataset: dataset_class(data_path).create_dataloaders(val_size=val_size, random_state=seed) for dataset, dataset_class in dataset_classes.items()}
+    train_dfs = {dataset: data_info['train_df'] for dataset, data_info in data_infos.items()}
     
-    _subsample = np.random.choice(
-        list(range(len(train_df))),
-        size=int(data_fraction * len(train_df)),
-        replace=False,
-    )
-    train_df = train_df.iloc[_subsample]
+    sum_dp = sum(len(v) for v in train_dfs.values())
+    n_class_samples = round(sum_dp * data_fraction / len(train_dfs))
+    for dataset, train_df in train_dfs.items():
+        _subsample = np.random.choice(
+            list(range(len(train_df))),
+            size=n_class_samples,
+            replace=len(train_df) < n_class_samples,
+        )
+        train_dfs[dataset] = train_df.iloc[_subsample]
     
-    val_df = data_info.get('val_df', None)
-    test_df = data_info['test_df']
-    num_classes = data_info['num_classes']
+    val_dfs = {dataset: data_info.get('val_df', None) for dataset, data_info in data_infos.items()}
+    test_dfs = {dataset: data_info['test_df'] for dataset, data_info in data_infos.items()}
+    num_classes = {dataset: data_info['num_classes'] for dataset, data_info in data_infos.items()}
     logger.info(
-        f"Train size: {len(train_df)}, Validation size: {len(val_df)}, Test size: {len(test_df)}"
+        [f"Train size: {len(train_dfs[dataset])}, Validation size: {len(val_dfs[dataset])}, Test size: {len(test_dfs[dataset])}" for dataset in dataset_classes.keys()]
     )
     logger.info(f"Number of classes: {num_classes}")
 
@@ -128,8 +131,8 @@ def main_loop(
 
     # Fit the AutoML model on the training and validation datasets
     val_err = automl.fit(
-        train_df,
-        val_df,
+        train_dfs,
+        val_dfs,
         num_classes=num_classes,
         load_path=load_path,
         save_path=output_path,
@@ -137,16 +140,17 @@ def main_loop(
     logger.info("Training complete")
 
     # Predict on the test set
-    test_preds, test_labels = automl.predict(test_df)
+    for task, test_df in test_dfs.items():
+        test_preds, test_labels = automl.predict(test_df, task)
 
-    # Write the predictions of X_test to disk
-    logger.info("Writing predictions to disk")
-    with (output_path / "score.yaml").open("w") as f:
-        yaml.safe_dump({"val_err": float(val_err)}, f)
-    logger.info(f"Saved validataion score at {output_path / 'score.yaml'}")
-    with (output_path / "test_preds.npy").open("wb") as f:
-        np.save(f, test_preds)
-    logger.info(f"Saved tet prediction at {output_path / 'test_preds.npy'}")
+        # Write the predictions of X_test to disk
+        logger.info("Writing predictions to disk")
+        with (output_path / "score.yaml").open("w") as f:
+            yaml.safe_dump({"val_err": float(val_err)}, f)
+        logger.info(f"Saved validataion score at {output_path / 'score.yaml'}")
+        with (output_path / "test_preds.npy").open("wb") as f:
+            np.save(f, test_preds)
+        logger.info(f"Saved tet prediction at {output_path / 'test_preds.npy'}")
 
     # In case of running on the final exam data, also add the predictions.npy
     # to the correct location for auto evaluation.
@@ -290,6 +294,11 @@ if __name__ == "__main__":
         default=1,
         help="Subsampling of training set, in fraction (0, 1]."
     )
+    parser.add_argument(
+        "--is-mtl",
+        action="store_true",
+        default=False,
+    )
     args = parser.parse_args()
 
     if args.output_path is None:
@@ -325,6 +334,7 @@ if __name__ == "__main__":
         lstm_emb_dim=args.lstm_emb_dim,
         lstm_hidden_dim=args.lstm_hidden_dim,
         data_fraction=args.data_fraction,
-        load_path=Path(args.load_path) if args.load_path is not None else None
+        load_path=Path(args.load_path) if args.load_path is not None else None,
+        is_mtl=args.is_mtl
     )
 # end of file

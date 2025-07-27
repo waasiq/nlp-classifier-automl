@@ -27,7 +27,11 @@ class SimpleTextDataset(Dataset):
             tokens = text.split()
             ids = [self.tokenizer.get(tok, 1) for tok in tokens[:self.max_length]]
             ids += [0] * (self.max_length - len(ids))
-            return torch.tensor(ids), torch.tensor(label)
+            return {
+                "input_ids": torch.tensor(ids), 
+                'labels': torch.tensor(label), 
+                'lengths': torch.tensor(len(tokens[:self.max_length]))
+                }
 
         elif TRANSFORMERS_AVAILABLE and hasattr(self.tokenizer, 'encode_plus'):
             encoded = self.tokenizer(
@@ -40,7 +44,8 @@ class SimpleTextDataset(Dataset):
             return {
                 'input_ids': encoded['input_ids'].squeeze(),
                 'attention_mask': encoded['attention_mask'].squeeze(),
-                'labels': torch.tensor(label)
+                'labels': torch.tensor(label),
+                'lengths': encoded['attention_mask'].squeeze().sum()  
             }
         else:
             raise ValueError("Tokenizer not defined or unsupported.")

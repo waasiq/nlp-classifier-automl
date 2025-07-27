@@ -38,7 +38,7 @@ cd /work/dlclarge2/alipourn-nastaran/automl/nlp-classifier-automl
 
 export PYTHONPATH=/home/alipourn/miniconda3/envs/nlp/bin/python
 
-python run.py --data-path data --dataset ag_news --epochs 2 --data-fraction 0.2 --approach tfidf --output-path outputs/nlp-tfidf-agnews
+python run.py --data-path data --dataset amazon --epochs 10 --data-fraction 0.6 --approach lstm --output-path outputs/nlp-lstm-amazon --is-mtl
 end=`date +%s`
 runtime=$((end-start))
 
