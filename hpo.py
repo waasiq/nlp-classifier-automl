@@ -28,6 +28,7 @@ from automl.datasets import (
     AmazonReviewsDataset,
     DBpediaDataset,
     IMDBDataset,
+    YelpDataset,
 )
 from run import main_loop
 logger = logging.getLogger(__name__)

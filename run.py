@@ -28,11 +28,12 @@ from automl.datasets import (
     AmazonReviewsDataset,
     DBpediaDataset,
     IMDBDataset,
+    YelpDataset,
 )
 
 logger = logging.getLogger(__name__)
 
-FINAL_TEST_DATASET=...  # TBA later
+FINAL_TEST_DATASET= "yelp"
 
 
 def main_loop(
@@ -66,6 +67,8 @@ def main_loop(
             dataset_class = AmazonReviewsDataset
         case "dbpedia":
             dataset_class = DBpediaDataset
+        case "yelp":
+            dataset_class = YelpDataset
         case _:
             raise ValueError(f"Invalid dataset: {dataset}")
     
@@ -77,6 +80,7 @@ def main_loop(
             "imdb": IMDBDataset,
             "amazon": AmazonReviewsDataset,
             "dbpedia": DBpediaDataset,
+            "yelp": YelpDataset,
         }
         dataset = "mtl"
 
