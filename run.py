@@ -14,7 +14,7 @@ python run.py \
 
 """
 from __future__ import annotations
-
+import sys
 import argparse
 import logging
 import numpy as np
@@ -30,6 +30,8 @@ from automl.datasets import (
     IMDBDataset,
     YelpDataset,
 )
+from hydra import compose, initialize
+from omegaconf import OmegaConf
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +86,8 @@ def main_loop(
         }
         dataset = "mtl"
 
-    run_name = f"{dataset}_seed={seed}_approach={approach}"
-    # logger = get_logger(log_dir=Path(output_path) / run_name, run_name=run_name)
+    run_name = f"{dataset}_seed={seed}_approach={approach}_lr={lr}"
+    plotter = get_logger(log_dir=Path(output_path) / run_name, run_name=run_name)
 
     logger.info("Fitting Text AutoML")
 
@@ -118,6 +120,7 @@ def main_loop(
     logger.info(
         [f"Train size: {len(train_dfs[dataset])}, Validation size: {len(val_dfs[dataset])}, Test size: {len(test_dfs[dataset])}" for dataset in dataset_classes.keys()]
     )
+    plotter.add_data_distribution(train_dfs, val_dfs, test_dfs)
     logger.info(f"Number of classes: {num_classes}")
 
     # Initialize the TextAutoML instance with the best parameters
@@ -134,6 +137,7 @@ def main_loop(
         lstm_emb_dim=lstm_emb_dim,
         lstm_hidden_dim=lstm_hidden_dim,
         fraction_layers_to_finetune=fraction_layers_to_finetune,
+        plotter=plotter
     )
 
     # Fit the AutoML model on the training and validation datasets
@@ -321,29 +325,32 @@ def parse_arguments(parser):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    args = parse_arguments(parser)
-    logging.basicConfig(level=logging.INFO, filename=args.output_path / "run.log", 
+    overrides = sys.argv[1:]
+    with initialize(config_path="./configs", version_base="1.3"):
+        cfg = compose(config_name="train", overrides=overrides)
+    args = OmegaConf.to_object(cfg)
+    out_dir = Path(args["output_path"])
+    out_dir.mkdir(parents=True, exist_ok=True) 
+    logging.basicConfig(level=logging.INFO, filename=out_dir / "run.log", 
                         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
                         datefmt="%Y-%m-%d %H:%M:%S")
 
     main_loop(
-        dataset=args.dataset,
-        output_path=Path(args.output_path).absolute(),
-        data_path=Path(args.data_path).absolute(),
-        seed=args.seed,
-        approach=args.approach,
-        vocab_size=args.vocab_size,
-        token_length=args.token_length,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        ffnn_hidden=args.ffnn_hidden_layer_dim,
-        lstm_emb_dim=args.lstm_emb_dim,
-        lstm_hidden_dim=args.lstm_hidden_dim,
-        data_fraction=args.data_fraction,
-        load_path=Path(args.load_path) if args.load_path is not None else None,
-        is_mtl=args.is_mtl
+        dataset=args["dataset"],
+        output_path=out_dir.absolute(),
+        data_path=Path(args["data_path"]).absolute(),
+        seed=args["seed"],
+        approach=args["approach"],
+        vocab_size=args["model_config"]["vocab_size"],
+        token_length=args["token_length"],
+        epochs=args["epochs"],
+        batch_size=args["batch_size"],
+        lr=args["lr"],
+        weight_decay=args["weight_decay"],
+        ffnn_hidden=args["ffnn_hidden_layer_dim"],
+        lstm_emb_dim=args["model_config"]["lstm_emb_dim"],
+        lstm_hidden_dim=args["model_config"]["lstm_hidden_dim"],
+        data_fraction=args["data_fraction"],
+        load_path=Path(args["load_path"]) if args["load_path"] else None,
+        is_mtl=args["is_mtl"]
     )
-# end of file

@@ -22,6 +22,7 @@ from pathlib import Path
 from sklearn.metrics import accuracy_score, classification_report
 import yaml
 import sys
+from wandb_log import get_logger
 import neps
 from automl.core import TextAutoML
 from automl.datasets import (

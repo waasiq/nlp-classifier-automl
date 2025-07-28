@@ -31,7 +31,7 @@ class HPOVisualization:
 
         idx = 1
         while True:
-            cfg_dir = configs_path / f"config_{idx}"
+            cfg_dir = configs_path / f"config_{idx}_0"
             report_path = cfg_dir / "report.yaml"
             if not (cfg_dir.is_dir() and report_path.is_file()):
                 break
@@ -42,7 +42,7 @@ class HPOVisualization:
             if report.get("err") is not None:
                 print(f"[skip] {report_path}: err != None → {report['err']}")
             else:
-                self.costs.append(float(report["cost"]))
+                self.costs.append(float(report["evaluation_duration"]))
                 self.val_losses.append(float(report["objective_to_minimize"]))
             idx += 1
 
@@ -120,7 +120,15 @@ def main() -> None:
         required=True,
         help="Directory with HPO results (contains 'configs/' sub‑dir)",
     )
-    parser.add_argument()
+    parser.add_argument(
+        "--model",
+        required=True,
+        choices=[
+            "lstm",
+            "bert"
+        ],
+        help="Model architecture used during the sweep",
+    )
 
     args = parser.parse_args()
     viz = HPOVisualization(args.result_dir, args.model)

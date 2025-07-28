@@ -15,6 +15,7 @@ from collections import Counter
 from automl.normalization import remove_markdowns
 import random
 from muon import SingleDeviceMuonWithAuxAdam
+import time
 try:
     from transformers import AutoTokenizer, AutoModelForSequenceClassification, DistilBertTokenizerFast
     TRANSFORMERS_AVAILABLE = True
@@ -39,6 +40,7 @@ class TextAutoML:
         lstm_emb_dim=128,
         lstm_hidden_dim=128,
         fraction_layers_to_finetune: float=1.0,
+        plotter=None
     ):
         self.seed = seed
         np.random.seed(seed)
@@ -57,6 +59,8 @@ class TextAutoML:
         self.lstm_emb_dim = lstm_emb_dim
         self.lstm_hidden_dim = lstm_hidden_dim
         self.fraction_layers_to_finetune = fraction_layers_to_finetune
+        
+        self.plotter = plotter
 
         self.model = None
         self.tokenizer = None
@@ -256,10 +260,12 @@ class TextAutoML:
             optimizer.load_state_dict(_states["optimizer_state_dict"])
             start_epoch = _states["epoch"]
             logger.info(f"Resuming from checkpoint at {start_epoch}")
-
-        for epoch in range(start_epoch, self.epochs):            
+        global_step = 0
+        start_train = time.time()
+        for epoch in range(start_epoch, self.epochs):
             train_iters = {task: iter(loader) for task, loader in train_loaders.items()}
             total_loss = 0
+            steps_in_accumulation = 0
             while len(train_iters.keys()) > 0:
                 task = random.choice(list(train_iters))
                 try:
@@ -296,6 +302,10 @@ class TextAutoML:
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
+                steps_in_accumulation += 1
+                global_step += 1
+                if steps_in_accumulation % 500 == 0:
+                    self.plotter.step(total_loss / steps_in_accumulation, step=global_step, task=task)
 
             logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
 
@@ -304,11 +314,14 @@ class TextAutoML:
                     val_preds, val_labels = self._predict(val_loaders[task], task)
                     val_acc = accuracy_score(val_labels, val_preds)
                     logger.info(f"Epoch {epoch + 1}, Validation Accuracy for dataset {task} is: {val_acc:.4f}")
+                    self.plotter.log_evaluation(
+                        epoch=epoch + 1, task=task, val_accuracy=val_acc, 
+                        val_preds=val_preds, val_labels=val_labels, 
+                    )
 
-        # if self.val_texts:
-        #     val_preds, val_labels = self._predict(val_loader)
-        #     val_acc = accuracy_score(val_labels, val_preds)
-        #     logger.info(f"Epoch {epoch + 1}, Validation Accuracy: {val_acc:.4f}")
+        if self.val_texts and "yelp" in train_loaders.keys():
+            val_preds, val_labels = self._predict(val_loaders["yelp"], "yelp")
+            val_acc = accuracy_score(val_labels, val_preds)
 
         if save_path is not None:
             save_path = Path(save_path) if not isinstance(save_path, Path) else save_path
