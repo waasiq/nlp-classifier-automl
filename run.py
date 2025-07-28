@@ -101,6 +101,9 @@ def main_loop(
     
     sum_dp = sum(len(v) for v in train_dfs.values())
     n_class_samples = round(sum_dp * data_fraction / len(train_dfs))
+
+    np.random.seed(seed)
+
     for dataset, train_df in train_dfs.items():
         _subsample = np.random.choice(
             list(range(len(train_df))),
@@ -180,16 +183,14 @@ def main_loop(
 
     return val_err
 
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+def parse_arguments(parser):
 
     parser.add_argument(
         "--dataset",
         type=str,
         required=True,
         help="The name of the dataset to run on.",
-        choices=["ag_news", "imdb", "amazon", "dbpedia",]
+        choices=["ag_news", "imdb", "amazon", "dbpedia", "yelp"]
     )
     parser.add_argument(
         "--output-path",
@@ -318,6 +319,10 @@ if __name__ == "__main__":
     args.output_path = Path(args.output_path).absolute()
     args.output_path.mkdir(parents=True, exist_ok=True)
 
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    args = parse_arguments(parser)
     logging.basicConfig(level=logging.INFO, filename=args.output_path / "run.log", 
                         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
                         datefmt="%Y-%m-%d %H:%M:%S")

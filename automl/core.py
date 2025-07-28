@@ -14,6 +14,7 @@ from typing import Tuple
 from collections import Counter
 from automl.normalization import remove_markdowns
 import random
+from muon import SingleDeviceMuonWithAuxAdam
 try:
     from transformers import AutoTokenizer, AutoModelForSequenceClassification, DistilBertTokenizerFast
     TRANSFORMERS_AVAILABLE = True
@@ -223,8 +224,28 @@ class TextAutoML:
         val_loaders: dict[str, DataLoader],
         load_path: Path=None,
         save_path: Path=None,
-    ):
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+    ):  
+        hidden = [p for p in self.model.parameters() if p.ndim >= 2]
+        others = [p for p in self.model.parameters() if p.ndim < 2]
+        optimizer = SingleDeviceMuonWithAuxAdam(
+            [
+                dict(
+                    params=hidden,
+                    use_muon=True,
+                    lr=self.lr,
+                    weight_decay=self.weight_decay,
+                    momentum=0.95,
+                ),
+                dict(
+                    params=others,
+                    use_muon=False,
+                    lr=self.lr,
+                    betas=[0.9, 0.999],
+                    eps=1e-06,
+                    weight_decay=self.weight_decay,
+                ),
+            ]
+        )
         criterion = nn.CrossEntropyLoss()
 
         start_epoch = 0
@@ -279,9 +300,10 @@ class TextAutoML:
             logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
 
             if self.val_texts:
-                val_preds, val_labels = self._predict(val_loaders[task], task)
-                val_acc = accuracy_score(val_labels, val_preds)
-                logger.info(f"Epoch {epoch + 1}, Validation Accuracy for dataset {task} is: {val_acc:.4f}")
+                for task in train_loaders.keys():
+                    val_preds, val_labels = self._predict(val_loaders[task], task)
+                    val_acc = accuracy_score(val_labels, val_preds)
+                    logger.info(f"Epoch {epoch + 1}, Validation Accuracy for dataset {task} is: {val_acc:.4f}")
 
         # if self.val_texts:
         #     val_preds, val_labels = self._predict(val_loader)
