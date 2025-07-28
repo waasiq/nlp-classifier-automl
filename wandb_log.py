@@ -81,10 +81,10 @@ class WandbLogger:
         """
 
 
-        wandb.log({"mean_train_loss": total_loss}, step=step)
+        wandb.log({"{task}/mean_train_loss": total_loss}, step=step)
 
     def log_evaluation(self, epoch, task, val_accuracy, val_preds, val_labels):
-        auc = roc_auc_score(val_labels, val_preds[:, -1])
+        auc = roc_auc_score(val_labels, val_preds)
         wandb.log({f"{task}/val_acc": val_accuracy, f"{task}/val_auc": auc}, step=epoch)
 
 
