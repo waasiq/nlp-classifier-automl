@@ -24,8 +24,8 @@ echo "Started at $(date)";
 echo "Running job $SLURM_JOB_NAME using $SLURM_JOB_CPUS_PER_NODE cpus per node with given JID $SLURM_JOB_ID on queue $SLURM_JOB_PARTITION";
 
 # Activate your environment
-source $HOME/miniconda3/etc/profile.d/conda.sh
-conda activate nlp
+source /work/dlclarge2/masoodw-spino100/miniconda3/bin/activate
+conda activate automl
 
 # Export CUDA debugging environment variables
 export CUDA_LAUNCH_BLOCKING=1
@@ -34,11 +34,11 @@ export TORCH_USE_CUDA_DSA=1
 # Running the job
 start=`date +%s`
 
-cd /work/dlclarge2/alipourn-nastaran/automl/nlp-classifier-automl
+cd /work/dlclarge2/masoodw-spino100/auto-ml/automl-nlp
 
-export PYTHONPATH=/home/alipourn/miniconda3/envs/nlp/bin/python
+export PYTHONPATH=/work/dlclarge2/masoodw-spino100/miniconda3/envs/automl/bin/python
 
-python run.py --data-path data --dataset amazon --epochs 10 --data-fraction 0.6 --approach lstm --output-path outputs/nlp-lstm-amazon --is-mtl
+python run.py --data-path data --dataset amazon --epochs 3 --data-fraction 0.6 --approach transformer --output-path outputs/mtl-transformer --is-mtl
 end=`date +%s`
 runtime=$((end-start))
 

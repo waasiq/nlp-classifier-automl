@@ -31,7 +31,7 @@ class SimpleTextDataset(Dataset):
                 "input_ids": torch.tensor(ids), 
                 'labels': torch.tensor(label), 
                 'lengths': torch.tensor(len(tokens[:self.max_length]))
-                }
+            }
 
         elif TRANSFORMERS_AVAILABLE and hasattr(self.tokenizer, 'encode_plus'):
             encoded = self.tokenizer(
@@ -39,6 +39,9 @@ class SimpleTextDataset(Dataset):
                 truncation=True,
                 padding='max_length',
                 max_length=self.max_length,
+                # Set false for DistilBert as we don't need token type ids distilbert doesnt use this feature :) 
+                return_token_type_ids=False, 
+                return_attention_mask=True,
                 return_tensors='pt'
             )
             return {

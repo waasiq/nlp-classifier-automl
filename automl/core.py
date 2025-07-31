@@ -6,22 +6,24 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
-from automl.models import SimpleFFNN, LSTMClassifier
+from automl.models import SimpleFFNN, LSTMClassifier, BertMultiTaskClassifier
 from automl.utils import SimpleTextDataset
 from pathlib import Path
 import logging
 from typing import Tuple
 from collections import Counter
 from automl.normalization import remove_markdowns
+from itertools import chain
 import random
+
 try:
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification, DistilBertTokenizerFast
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    from transformers import DistilBertModel, DistilBertTokenizer, BertConfig
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-
 
 class TextAutoML:
     def __init__(
@@ -154,10 +156,13 @@ class TextAutoML:
             self.model = SimpleFFNN(
                 X.shape[1], hidden=self.ffnn_hidden, output_dim=self.num_classes
             )
-
         elif self.approach in ['lstm', 'transformer']:
-            model_name = 'distilbert-base-cased'
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            model_name = 'distilbert-base-uncased'
+            if self.approach == 'transformer':
+                self.tokenizer = DistilBertTokenizer.from_pretrained(model_name, do_lower_case=True)
+            else:
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+
             self.vocab_size = self.tokenizer.vocab_size
             datasets = {
                 task: SimpleTextDataset(
@@ -189,14 +194,25 @@ class TextAutoML:
                     )
                 case "transformer":
                     if TRANSFORMERS_AVAILABLE:
-                        self.model = AutoModelForSequenceClassification.from_pretrained(
-                            model_name, 
-                            num_labels=self.num_classes
+                        task_num_classes = {
+                                "dbpedia": 14,
+                                "ag_news": 4,
+                                "amazon": 5,
+                                "imdb": 2,
+                                "yelp": 5
+                            }
+
+                        self.model = BertMultiTaskClassifier(
+                            DistilBertModel.from_pretrained(model_name),
+                            task_num_classes,
+                            common_layer_hidden_size=768,
+                            common_dropout_prob=0.1,
+                            num_bert_layers_to_unfreeze=2,
+                            head_dropout_prob=0.1
                         )
-                        freeze_layers(self.model, self.fraction_layers_to_finetune)  
                     else:
                         raise ValueError(
-                            "Need `AutoTokenizer`, `AutoModelForSequenceClassification` "
+                            "Need `BertTokenizer`, `AutoModelForSequenceClassification` "
                             "from `transformers` package."
                         )
                 case _:
@@ -224,7 +240,23 @@ class TextAutoML:
         load_path: Path=None,
         save_path: Path=None,
     ):
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        if self.approach == "transformer":
+            head_params = chain(
+                            self.model.shared_common_backbone.parameters(),
+                            self.model.classification_heads.parameters()
+                        )
+            optimizer_grouped_parameters = [
+                {"params": self.model.bert.parameters(), "lr": 5e-5}, # BERT backbone LR
+                {"params": head_params, "lr": 2e-5}                   # Custom head LR
+            ]
+            optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=self.weight_decay)
+
+
+            print("\nVerifying parameter trainability:")
+            for name, param in self.model.named_parameters():
+                print(f"Parameter: {name}, Requires Grad: {param.requires_grad}")
+        else:
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         criterion = nn.CrossEntropyLoss()
 
         start_epoch = 0
@@ -263,30 +295,34 @@ class TextAutoML:
                             x, y = batch[0].to(self.device), batch[1].to(self.device)
                             outputs = self.model(x)
                             labels = y
-                        case "lstm" | "transformer":
+                        case "lstm":
                             inputs = {k: v.to(self.device) for k, v in batch.items()}
                             outputs = self.model(**inputs, task=task)
+                            labels = inputs["labels"]
+                        case "transformer":
+                            inputs = {k: v.to(self.device) for k, v in batch.items()}
+                            model_inputs = {
+                                'input_ids': inputs['input_ids'],
+                                'attention_mask': inputs['attention_mask']
+                            }
+                            outputs = self.model(**model_inputs, task_name=task)
                             labels = inputs["labels"]
                         case _:
                             raise ValueError("Oops! Wrong approach.")
 
-                    outputs = outputs.logits if self.approach == "transformer" else outputs
+                    #outputs = outputs.logits if self.approach == "transformer" else outputs
                     loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
 
             logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
-
+            
             if self.val_texts:
-                val_preds, val_labels = self._predict(val_loaders[task], task)
-                val_acc = accuracy_score(val_labels, val_preds)
-                logger.info(f"Epoch {epoch + 1}, Validation Accuracy for dataset {task} is: {val_acc:.4f}")
-
-        # if self.val_texts:
-        #     val_preds, val_labels = self._predict(val_loader)
-        #     val_acc = accuracy_score(val_labels, val_preds)
-        #     logger.info(f"Epoch {epoch + 1}, Validation Accuracy: {val_acc:.4f}")
+                for task in train_loaders.keys():
+                    val_preds, val_labels = self._predict(val_loaders[task], task)
+                    val_acc = accuracy_score(val_labels, val_preds)
+                    logger.info(f"Epoch {epoch + 1}, Validation Accuracy for dataset {task} is: {val_acc:.4f}")
 
         if save_path is not None:
             save_path = Path(save_path) if not isinstance(save_path, Path) else save_path
@@ -319,10 +355,17 @@ class TextAutoML:
                             x, y = batch[0].to(self.device), batch[1].to(self.device)
                             outputs = self.model(x)
                             labels.extend(y)
-                        case "lstm" | "transformer":
+                        case "lstm" "transformer":
                             inputs = {k: v.to(self.device) for k, v in batch.items()}
                             outputs = self.model(**inputs, task=task)
-                            outputs = outputs.logits if self.approach == "transformer" else outputs
+                            labels.extend(inputs["labels"])
+                        case "transformer":
+                            inputs = {k: v.to(self.device) for k, v in batch.items()}
+                            model_inputs = {
+                                'input_ids': inputs['input_ids'],
+                                'attention_mask': inputs['attention_mask']
+                            }
+                            outputs = self.model(**model_inputs, task_name=task)
                             labels.extend(inputs["labels"])
                         case _:
                             raise ValueError("Oops! Wrong approach.")
@@ -366,14 +409,3 @@ class TextAutoML:
             # handling any possible tokenization
         
         return self._predict(_loader, task)
-
-
-def freeze_layers(model, fraction_layers_to_finetune: float=1.0) -> None:
-    total_layers = len(model.distilbert.transformer.layer)
-    _num_layers_to_finetune = int(fraction_layers_to_finetune * total_layers)
-    layers_to_freeze = total_layers - _num_layers_to_finetune
-
-    for layer in model.distilbert.transformer.layer[:layers_to_freeze]:
-        for param in layer.parameters():
-            param.requires_grad = False
-# end of file
