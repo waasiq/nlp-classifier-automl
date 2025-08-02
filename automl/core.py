@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
-from automl.models import LSTMClassifier
+from automl.models import LSTMClassifier, TransformerMultiTaskClassifier
 from automl.utils import SimpleTextDataset
 from pathlib import Path
 import logging
@@ -34,7 +34,7 @@ class TextAutoML:
         batch_size=64,
         lr=1e-4,
         weight_decay=0.0,
-        model_name="distilbert-base-uncased",
+        model_name="distilroberta-base",
         ffnn_hidden=128,
         lstm_emb_dim=128,
         lstm_hidden_dim=128,
@@ -133,7 +133,7 @@ class TextAutoML:
         dataset = None
         if self.approach in ['lstm', 'transformer']:
             if self.approach == 'transformer':
-                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             else:
                 self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -176,7 +176,7 @@ class TextAutoML:
                                 "yelp": 5
                         }
 
-                        backbone = AutoModel.from_pretrained(model_name)
+                        backbone = AutoModel.from_pretrained(self.model_name)
 
                         self.model = TransformerMultiTaskClassifier(
                             backbone=backbone,
@@ -259,7 +259,7 @@ class TextAutoML:
                 optimizer.zero_grad()
 
                 # if isinstance(batch, dict):
-                if isinstance(self.model, AutoModelForSequenceClassification):
+                if isinstance(self.model, AutoModel):
                     inputs = {k: v.to(self.device) for k, v in batch.items()}
                     outputs = self.model(**inputs)
                     loss = outputs.loss
@@ -320,7 +320,7 @@ class TextAutoML:
         labels = []
         with torch.no_grad():
             for batch in val_loader:
-                if isinstance(self.model, AutoModelForSequenceClassification):
+                if isinstance(self.model, AutoModel):
                     inputs = {k: v.to(self.device) for k, v in batch.items() if k != 'labels'}
                     outputs = self.model(**inputs).logits
                     labels.extend(batch["labels"])

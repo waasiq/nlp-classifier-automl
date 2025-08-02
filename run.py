@@ -56,6 +56,7 @@ def main_loop(
         data_fraction: int = 1.0,
         load_path: Path = None,
         is_mtl: bool = False,
+        model_name: str = "distilroberta-base",
     ) -> None:
     
     match dataset:
@@ -131,6 +132,7 @@ def main_loop(
         lstm_emb_dim=lstm_emb_dim,
         lstm_hidden_dim=lstm_hidden_dim,
         fraction_layers_to_finetune=fraction_layers_to_finetune,
+        model_name=model_name,
     )
 
     # Fit the AutoML model on the training and validation datasets
@@ -303,6 +305,12 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "--model-name",
+        default="distilroberta-base",
+        type=str,
+        help="The name of the model to use for the transformer approach."
+    )
     args = parser.parse_args()
 
     if args.output_path is None:
@@ -339,6 +347,7 @@ if __name__ == "__main__":
         lstm_hidden_dim=args.lstm_hidden_dim,
         data_fraction=args.data_fraction,
         load_path=Path(args.load_path) if args.load_path is not None else None,
-        is_mtl=args.is_mtl
+        is_mtl=args.is_mtl,
+        model_name=args.model_name
     )
 # end of file

@@ -5,18 +5,6 @@ from transformers import DistilBertModel
 from transformers import RobertaModel
 
 
-class SimpleFFNN(nn.Module):
-    def __init__(self, input_dim, hidden=128, output_dim=2):
-        super().__init__()
-        self.model = nn.Sequential(
-            nn.Linear(input_dim, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, output_dim)
-        )
-
-    def forward(self, x): return self.model(x)
-
-
 class LSTMClassifier(nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dims: dict[str, int]):
         super().__init__()
