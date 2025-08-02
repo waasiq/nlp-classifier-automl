@@ -79,13 +79,14 @@ class WandbLogger:
             epoch (int): The current epoch number.
             optimizer (torch.optim.Optimizer): The optimizer used during training.
         """
-
-
-        wandb.log({"{task}/mean_train_loss": total_loss}, step=step)
+        print('hereeee')
+        wandb.log({f"{task}/mean_train_loss": total_loss}, step=step)
 
     def log_evaluation(self, epoch, task, val_accuracy, val_auc):
         wandb.log({f"{task}/val_acc": val_accuracy, f"{task}/val_auc": val_auc}, step=epoch)
 
+    def epoch_info(self, epoch, mean_val_accuracy, mean_val_auc, mean_train_loss):
+        wandb.log({"mean_val_accuracy": mean_val_accuracy, "mean_val_roc_auc": mean_val_auc, "mean_train_loss": mean_train_loss}, step=epoch)
 
     def close(self):
         """

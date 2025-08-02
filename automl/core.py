@@ -265,8 +265,6 @@ class TextAutoML:
             optimizer.load_state_dict(_states["optimizer_state_dict"])
             start_epoch = _states["epoch"]
             logger.info(f"Resuming from checkpoint at {start_epoch}")
-        global_step = 0
-        start_train = time.time()
         for epoch in range(start_epoch, self.epochs):
             train_iters = {task: iter(loader) for task, loader in train_loaders.items()}
             total_loss = 0
@@ -308,34 +306,37 @@ class TextAutoML:
                 optimizer.step()
                 total_loss += loss.item()
                 steps_in_accumulation += 1
-                global_step += 1
-                if steps_in_accumulation % 500 == 0:
-                    self.plotter.step(total_loss / steps_in_accumulation, step=global_step, task=task)
 
             logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
-
             if self.val_texts:
+                total_val_accuracys = 0.0
+                total_val_auc = 0.0
                 for task in train_loaders.keys():
                     (val_preds, val_labels), val_prob = self._predict(val_loaders[task], task)
                     val_acc = accuracy_score(val_labels, val_preds)
                     logger.info(f"Epoch {epoch + 1}, Validation Accuracy for dataset {task} is: {val_acc:.4f}")
                     n_classes = self.num_classes[task]
                     y_true_binarized = label_binarize(val_labels, classes=np.arange(n_classes))
+                    
                     if n_classes == 2:
                         auc =  roc_auc_score(val_labels, val_prob[:, 1])
                     else:
                     # Multiclass classification - use one-vs-rest approach
-                        auc = roc_auc_score(
-                            y_true_binarized, val_prob, multi_class="ovr", average="macro"
-                        )
+                        auc = custom_multiclass_roc_auc(y_true_binarized, val_prob)
                     self.plotter.log_evaluation(
                         epoch=epoch + 1, task=task, val_accuracy=val_acc, 
-                        val_auc=auc
+                        val_auc=auc,
                     )
-
-        if self.val_texts and "yelp" in train_loaders.keys():
-            (val_preds, val_labels), val_prob = self._predict(val_loaders["yelp"], "yelp")
-            val_acc = accuracy_score(val_labels, val_preds)
+                    total_val_accuracys += val_acc
+                    total_val_auc += auc
+                mean_val_accuracy = total_val_accuracys / len(train_loaders)
+                mean_val_auc = total_val_auc / len(train_loaders)
+                self.plotter.epoch_info(
+                    mean_val_accuracy=mean_val_accuracy, 
+                    mean_val_auc=mean_val_auc, 
+                    epoch=epoch+1,
+                    mean_train_loss=total_loss / steps_in_accumulation,
+                    )
 
         if save_path is not None:
             save_path = Path(save_path) if not isinstance(save_path, Path) else save_path
@@ -350,7 +351,7 @@ class TextAutoML:
                 save_path / "checkpoint.pth"
             )   
         torch.cuda.empty_cache()
-        return val_acc or 0.0
+        return mean_val_accuracy or 0.0
 
     def _predict(self, val_loader: DataLoader, task):
         self.model.eval()
@@ -430,3 +431,30 @@ def freeze_layers(model, fraction_layers_to_finetune: float=1.0) -> None:
         for param in layer.parameters():
             param.requires_grad = False
 # end of file
+
+
+def custom_multiclass_roc_auc(y_true_binarized: np.ndarray, y_prob: np.ndarray) -> float:
+    """Compute macro-averaged ROC AUC score (one-vs-rest) from scratch."""
+    def binary_auc(y_true, y_score):
+        # Sort scores and corresponding true labels
+        desc_score_indices = np.argsort(-y_score)
+        y_true_sorted = y_true[desc_score_indices]
+        y_score_sorted = y_score[desc_score_indices]
+
+        tps = np.cumsum(y_true_sorted)
+        fps = np.cumsum(1 - y_true_sorted)
+
+        tpr = tps / tps[-1] if tps[-1] > 0 else np.zeros_like(tps)
+        fpr = fps / fps[-1] if fps[-1] > 0 else np.zeros_like(fps)
+
+        # Trapezoidal integration
+        return np.trapz(tpr, fpr)
+
+    n_classes = y_true_binarized.shape[1]
+    aucs = []
+    for i in range(n_classes):
+        if np.sum(y_true_binarized[:, i]) == 0:
+            continue  # Skip if this class doesn't appear
+        auc_i = binary_auc(y_true_binarized[:, i], y_prob[:, i])
+        aucs.append(auc_i)
+    return np.mean(aucs) if aucs else float("nan")
