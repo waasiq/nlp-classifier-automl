@@ -3,10 +3,9 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
-from automl.models import SimpleFFNN, LSTMClassifier, BertMultiTaskClassifier
+from automl.models import LSTMClassifier
 from automl.utils import SimpleTextDataset
 from pathlib import Path
 import logging
@@ -96,7 +95,7 @@ class TextAutoML:
         - val_df (pd.DataFrame): Validation data with 'text' and 'label' columns.
         - num_classes (int): Number of classes in the dataset.
         - seed (int): Random seed for reproducibility.
-        - approach (str): Model type - 'tfidf', 'lstm', or 'transformer'. Default is 'auto'.
+        - approach (str): Model type - 'lstm', or 'transformer'. Default is 'auto'.
         - vocab_size (int): Maximum vocabulary size.
         - token_length (int): Maximum token sequence length.
         - epochs (int): Number of training epochs.
@@ -132,32 +131,7 @@ class TextAutoML:
         logger.info(f"Val class distribution: {val_class_dist}")
 
         dataset = None
-        if self.approach == 'tfidf':
-            self.vectorizer = TfidfVectorizer(
-                max_features=self.vocab_size,
-                lowercase=True,
-                min_df=2,    # ignore words appearing in less than 2 sentences
-                max_df=0.8,  # ignore words appearing in > 80% of sentences
-                sublinear_tf=True,  # use log-spaced term-frequency scoring
-            )
-            # self.train_texts = [remove_markdowns(text) for text in self.train_texts]
-            X = self.vectorizer.fit_transform(self.train_texts).toarray()
-            dataset = torch.utils.data.TensorDataset(
-                torch.tensor(X, dtype=torch.float32),
-                torch.tensor(self.train_labels)
-            )
-            # models and dataloaders
-            train_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-            X = self.vectorizer.transform(self.val_texts).toarray()
-            _dataset = torch.utils.data.TensorDataset(
-                torch.tensor(X, dtype=torch.float32),
-                torch.tensor(self.val_labels)
-            )
-            val_loader = DataLoader(_dataset, batch_size=self.batch_size, shuffle=True)
-            self.model = SimpleFFNN(
-                X.shape[1], hidden=self.ffnn_hidden, output_dim=self.num_classes
-            )
-        elif self.approach in ['lstm', 'transformer']:
+        if self.approach in ['lstm', 'transformer']:
             if self.approach == 'transformer':
                 self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             else:
@@ -292,10 +266,6 @@ class TextAutoML:
                     labels = inputs['labels']
                 else:
                     match self.approach:
-                        case "tfidf":
-                            x, y = batch[0].to(self.device), batch[1].to(self.device)
-                            outputs = self.model(x)
-                            labels = y
                         case "lstm":
                             inputs = {k: v.to(self.device) for k, v in batch.items()}
                             outputs = self.model(**inputs, task=task)
@@ -356,10 +326,6 @@ class TextAutoML:
                     labels.extend(batch["labels"])
                 else:
                     match self.approach:
-                        case "tfidf":
-                            x, y = batch[0].to(self.device), batch[1].to(self.device)
-                            outputs = self.model(x)
-                            labels.extend(y)
                         case "lstm" "transformer":
                             inputs = {k: v.to(self.device) for k, v in batch.items()}
                             outputs = self.model(**inputs, task=task)
@@ -393,15 +359,7 @@ class TextAutoML:
         if isinstance(test_data, DataLoader):
             return self._predict(test_data, task)
         
-        if self.approach == 'tfidf':
-            _X = self.vectorizer.transform(test_data['text'].tolist()).toarray()
-            _labels = test_data['label'].tolist()
-            _dataset = torch.utils.data.TensorDataset(
-                torch.tensor(_X, dtype=torch.float32),
-                torch.tensor(_labels)
-            )
-            _loader = DataLoader(_dataset, batch_size=self.batch_size, shuffle=True)
-        elif self.approach in ['lstm', 'transformer']:
+        if self.approach in ['lstm', 'transformer']:
             _dataset = SimpleTextDataset(
                 test_data['text'].tolist(),
                 test_data['label'].tolist(),

@@ -48,9 +48,7 @@ def test_approach(approach_name: str, dataset_size: int = 100):
         # Manually call the specific fitting method
         automl.num_classes = 4
         
-        if approach_name in ["bag_of_words", "tfidf"]:
-            automl._fit_classical(train_df, limited_data_info['val_df'])
-        elif approach_name == "neural-lstm":
+        if approach_name == "neural-lstm":
             automl._fit_neural_lstm(train_df, limited_data_info['val_df'])
         elif approach_name == "neural-transformer":
             automl._fit_neural_transformer(train_df, limited_data_info['val_df'])
@@ -64,9 +62,7 @@ def test_approach(approach_name: str, dataset_size: int = 100):
             logger.info(f"✓ Model created successfully for {approach_name}")
             
             # Quick prediction test with dummy data
-            if approach_name in ["bag_of_words", "tfidf"] and automl.vectorizer is not None:
-                logger.info(f"✓ Vectorizer created for {approach_name}")
-            elif approach_name in ["neural-lstm", "neural-transformer"] and automl.tokenizer is not None:
+            if approach_name in ["neural-lstm", "neural-transformer"] and automl.tokenizer is not None:
                 logger.info(f"✓ Tokenizer created for {approach_name}")
             elif approach_name == "finetune":
                 logger.info(f"✓ Pretrained tokenizer loaded for {approach_name}")
@@ -110,8 +106,8 @@ def main():
     parser.add_argument(
         "--approaches",
         nargs='+',
-        default=["bag_of_words", "tfidf", "neural-lstm", "neural-transformer", "finetune"],
-        choices=["bag_of_words", "tfidf", "neural-lstm", "neural-transformer", "finetune"],
+        default=["neural-lstm", "neural-transformer", "finetune"],
+        choices=["neural-lstm", "neural-transformer", "finetune"],
         help="Approaches to test"
     )
     parser.add_argument(

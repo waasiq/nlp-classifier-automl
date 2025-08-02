@@ -117,10 +117,10 @@ if __name__ == "__main__":
         "--approach",
         type=str,
         default="transformer",
-        choices=["tfidf", "lstm", "transformer"],
+        choices=["lstm", "transformer"],
         help=(
             "The approach to use for the AutoML system. "
-            "Options are 'tfidf', 'lstm', or 'transformer'."
+            "Options are 'lstm', or 'transformer'."
         )
     )
     parser.add_argument(
