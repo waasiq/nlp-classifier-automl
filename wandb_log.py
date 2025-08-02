@@ -5,8 +5,8 @@ import torch
 import wandb
 import yaml
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score
 
+import numpy as np
 
 class WandbLogger:
     """
@@ -83,9 +83,8 @@ class WandbLogger:
 
         wandb.log({"{task}/mean_train_loss": total_loss}, step=step)
 
-    def log_evaluation(self, epoch, task, val_accuracy, val_preds, val_labels):
-        auc = roc_auc_score(val_labels, val_preds)
-        wandb.log({f"{task}/val_acc": val_accuracy, f"{task}/val_auc": auc}, step=epoch)
+    def log_evaluation(self, epoch, task, val_accuracy, val_auc):
+        wandb.log({f"{task}/val_acc": val_accuracy, f"{task}/val_auc": val_auc}, step=epoch)
 
 
     def close(self):

@@ -16,6 +16,11 @@ from automl.normalization import remove_markdowns
 import random
 from muon import SingleDeviceMuonWithAuxAdam
 import time
+
+from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import label_binarize
+
+
 try:
     from transformers import AutoTokenizer, AutoModelForSequenceClassification, DistilBertTokenizerFast
     TRANSFORMERS_AVAILABLE = True
@@ -171,7 +176,7 @@ class TextAutoML:
             }
             train_loaders = {
                 task:
-                DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+                DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
                 for task, dataset in datasets.items()
             }
             _datasets = {
@@ -180,7 +185,7 @@ class TextAutoML:
                 ) for task in self.val_texts.keys()
             }
             val_loaders = {
-                task: DataLoader(_dataset, batch_size=self.batch_size, shuffle=True)
+                task: DataLoader(_dataset, batch_size=self.batch_size, shuffle=False)
                     for task, _dataset in _datasets.items()
             }
 
@@ -311,16 +316,25 @@ class TextAutoML:
 
             if self.val_texts:
                 for task in train_loaders.keys():
-                    val_preds, val_labels = self._predict(val_loaders[task], task)
+                    (val_preds, val_labels), val_prob = self._predict(val_loaders[task], task)
                     val_acc = accuracy_score(val_labels, val_preds)
                     logger.info(f"Epoch {epoch + 1}, Validation Accuracy for dataset {task} is: {val_acc:.4f}")
+                    n_classes = self.num_classes[task]
+                    y_true_binarized = label_binarize(val_labels, classes=np.arange(n_classes))
+                    if n_classes == 2:
+                        auc =  roc_auc_score(val_labels, val_prob[:, 1])
+                    else:
+                    # Multiclass classification - use one-vs-rest approach
+                        auc = roc_auc_score(
+                            y_true_binarized, val_prob, multi_class="ovr", average="macro"
+                        )
                     self.plotter.log_evaluation(
                         epoch=epoch + 1, task=task, val_accuracy=val_acc, 
-                        val_preds=val_preds, val_labels=val_labels, 
+                        val_auc=auc
                     )
 
         if self.val_texts and "yelp" in train_loaders.keys():
-            val_preds, val_labels = self._predict(val_loaders["yelp"], "yelp")
+            (val_preds, val_labels), val_prob = self._predict(val_loaders["yelp"], "yelp")
             val_acc = accuracy_score(val_labels, val_preds)
 
         if save_path is not None:
@@ -341,6 +355,7 @@ class TextAutoML:
     def _predict(self, val_loader: DataLoader, task):
         self.model.eval()
         preds = []
+        all_probs = []
         labels = []
         with torch.no_grad():
             for batch in val_loader:
@@ -362,14 +377,17 @@ class TextAutoML:
                         case _:
                             raise ValueError("Oops! Wrong approach.")
                             
-                preds.extend(torch.argmax(outputs, dim=1).cpu().numpy())
+                probs = torch.softmax(outputs, dim=1)
+                pred = torch.argmax(probs, dim=1)
+                preds.extend(pred.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
         
         if isinstance(preds, list):
             preds = [p.item() for p in preds]
             labels = [l.item() for l in labels]
-            return np.array(preds), np.array(labels)
+            return (np.array(preds), np.array(labels)), np.array(all_probs)
         else:
-            return preds.cpu().numpy(), labels.cpu().numpy()
+            return (preds.cpu().numpy(), labels.cpu().numpy()), all_probs.cpu().numpy()
 
 
     def predict(self, test_data: pd.DataFrame | DataLoader, task) -> Tuple[np.ndarray, np.ndarray]:
@@ -378,7 +396,7 @@ class TextAutoML:
             f"Input data type: {type(test_data)}; Expected: pd.DataFrame | DataLoader"
 
         if isinstance(test_data, DataLoader):
-            return self._predict(test_data, task)
+            return self._predict(test_data, task)[0]
         
         if self.approach == 'tfidf':
             _X = self.vectorizer.transform(test_data['text'].tolist()).toarray()
@@ -400,7 +418,7 @@ class TextAutoML:
             raise ValueError(f"Unrecognized approach: {self.approach}")
             # handling any possible tokenization
         
-        return self._predict(_loader, task)
+        return self._predict(_loader, task)[0]
 
 
 def freeze_layers(model, fraction_layers_to_finetune: float=1.0) -> None:
