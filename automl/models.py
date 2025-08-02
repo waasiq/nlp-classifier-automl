@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from transformers import DistilBertModel
+from transformers import RobertaModel
 
 
 class SimpleFFNN(nn.Module):
@@ -49,50 +50,42 @@ class CustomClassificationHead(nn.Module):
     def forward(self, features):
         x = self.dropout(features)
         logits = self.classifier(x)
-        return logits 
+        return logits
 
-class BertMultiTaskClassifier(nn.Module):
-    def __init__(self, bert_backbone: DistilBertModel, task_num_classes: dict, 
-                 common_layer_hidden_size: int = 768, common_dropout_prob: float = 0.1, 
+class TransformerMultiTaskClassifier(nn.Module):
+    def __init__(self, backbone: nn.Module, task_num_classes: dict,
+                 common_layer_hidden_size: int = 768, common_dropout_prob: float = 0.1,
                  num_bert_layers_to_unfreeze: int = 0,
-                 head_dropout_prob: float = 0.1 
+                 head_dropout_prob: float = 0.1
                 ):
         super().__init__()
-        
-        self.bert = bert_backbone 
+        self.backbone = backbone
 
-        # Freezing all BERT layers initially 
-        for param in self.bert.parameters():
+        for param in self.backbone.parameters():
             param.requires_grad = False
 
-        total_bert_layers = len(self.bert.transformer.layer) # 6 for DistilBERT
-        
-        if num_bert_layers_to_unfreeze > 0:
-            if num_bert_layers_to_unfreeze > total_bert_layers:
-                print(f"Warning: Trying to unfreeze {num_bert_layers_to_unfreeze} layers, but DistilBERT only has {total_bert_layers}.")
-                num_bert_layers_to_unfreeze = total_bert_layers
+        layer_module = None
+        if isinstance(self.backbone, RobertaModel):
+            layer_module = self.backbone.encoder.layer
+        elif isinstance(self.backbone, DistilBertModel):
+            layer_module = self.backbone.transformer.layer
+        else:
+            raise ValueError("Unsupported backbone type for unfreezing logic.")
 
-            for i, layer in enumerate(self.bert.transformer.layer):
-                if i >= (total_bert_layers - num_bert_layers_to_unfreeze):
+        if num_bert_layers_to_unfreeze > 0:
+            total_layers = len(layer_module)
+            for i, layer in enumerate(layer_module):
+                if i >= (total_layers - num_bert_layers_to_unfreeze):
                     for param in layer.parameters():
                         param.requires_grad = True
-                    print(f"Unfreezing BERT transformer layer {i}")
-            
-            if hasattr(self.bert.transformer, 'layer_norm'): 
-                for param in self.bert.transformer.layer_norm.parameters():
-                    param.requires_grad = True
-                print("Unfreezing BERT's final layer norm.")
-            
+                    print(f"Unfreezing layer {i} of {self.backbone.config.model_type}")
 
-        bert_output_size = self.bert.config.hidden_size 
+        bert_output_size = self.backbone.config.hidden_size
 
-        # This is the shared common backbone thought by us. 
-        # Fairly simple of 2 linear layers with ReLU and dropout in between.
         self.shared_common_backbone = nn.Sequential(
             nn.Linear(bert_output_size, common_layer_hidden_size),
             nn.ReLU(),
             nn.Dropout(common_dropout_prob),
-            
             nn.Linear(common_layer_hidden_size, common_layer_hidden_size),
             nn.ReLU(),
             nn.Dropout(common_dropout_prob)
@@ -107,11 +100,11 @@ class BertMultiTaskClassifier(nn.Module):
             )
 
     def forward(self, input_ids, attention_mask, task_name):
-        outputs = self.bert(input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            return_dict=True)
-
+        outputs = self.backbone(input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                return_dict=True)
         cls_output = outputs.last_hidden_state[:, 0, :]
         shared_features = self.shared_common_backbone(cls_output)
         logits = self.classification_heads[task_name](shared_features)
         return logits
+

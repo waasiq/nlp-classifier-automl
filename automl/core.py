@@ -17,8 +17,7 @@ from itertools import chain
 import random
 
 try:
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
-    from transformers import DistilBertModel, DistilBertTokenizer, BertConfig
+    from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
@@ -36,6 +35,7 @@ class TextAutoML:
         batch_size=64,
         lr=1e-4,
         weight_decay=0.0,
+        model_name="distilbert-base-uncased",
         ffnn_hidden=128,
         lstm_emb_dim=128,
         lstm_hidden_dim=128,
@@ -45,6 +45,7 @@ class TextAutoML:
         np.random.seed(seed)
         torch.manual_seed(seed)
 
+        self.model_name = model_name
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.approach = approach
         self.vocab_size = vocab_size
@@ -157,9 +158,8 @@ class TextAutoML:
                 X.shape[1], hidden=self.ffnn_hidden, output_dim=self.num_classes
             )
         elif self.approach in ['lstm', 'transformer']:
-            model_name = 'distilbert-base-uncased'
             if self.approach == 'transformer':
-                self.tokenizer = DistilBertTokenizer.from_pretrained(model_name, do_lower_case=True)
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             else:
                 self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -200,20 +200,18 @@ class TextAutoML:
                                 "amazon": 5,
                                 "imdb": 2,
                                 "yelp": 5
-                            }
+                        }
 
-                        self.model = BertMultiTaskClassifier(
-                            DistilBertModel.from_pretrained(model_name),
-                            task_num_classes,
-                            common_layer_hidden_size=768,
-                            common_dropout_prob=0.1,
-                            num_bert_layers_to_unfreeze=2,
-                            head_dropout_prob=0.1
+                        backbone = AutoModel.from_pretrained(model_name)
+
+                        self.model = TransformerMultiTaskClassifier(
+                            backbone=backbone,
+                            task_num_classes=task_num_classes,
+                            num_bert_layers_to_unfreeze=2 
                         )
                     else:
                         raise ValueError(
-                            "Need `BertTokenizer`, `AutoModelForSequenceClassification` "
-                            "from `transformers` package."
+                            "Need transformer package."
                         )
                 case _:
                     raise ValueError("Unsupported approach or missing transformers.")
@@ -246,15 +244,18 @@ class TextAutoML:
                             self.model.classification_heads.parameters()
                         )
             optimizer_grouped_parameters = [
-                {"params": self.model.bert.parameters(), "lr": 5e-5}, # BERT backbone LR
-                {"params": head_params, "lr": 2e-5}                   # Custom head LR
+                {"params": self.model.backbone.parameters(), "lr": 5e-5}, # BERT backbone LR
+                {"params": head_params, "lr": 2e-5}                       # Custom head LR
             ]
             optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=self.weight_decay)
+            num_training_steps = sum(len(loader) for loader in train_loaders.values()) * self.epochs
+            num_warmup_steps = int(num_training_steps * 0.1) 
 
-
-            print("\nVerifying parameter trainability:")
-            for name, param in self.model.named_parameters():
-                print(f"Parameter: {name}, Requires Grad: {param.requires_grad}")
+            scheduler = get_linear_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=num_training_steps
+            )
         else:
             optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         criterion = nn.CrossEntropyLoss()
@@ -314,6 +315,10 @@ class TextAutoML:
                     loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
+
+                if scheduler:
+                    scheduler.step()
+                    
                 total_loss += loss.item()
 
             logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
