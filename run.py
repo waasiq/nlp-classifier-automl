@@ -60,11 +60,11 @@ def load_dataset(dataset: str, data_path: Path, val_size: float, seed: int, is_m
 
     if is_mtl:
         dataset_classes = {
-            "ag_news": AGNewsDataset,
+            #"ag_news": AGNewsDataset,
             "imdb": IMDBDataset,
             "amazon": AmazonReviewsDataset,
-            "dbpedia": DBpediaDataset,
-            "yelp": YelpDataset,
+            #"dbpedia": DBpediaDataset,
+            #"yelp": YelpDataset,
         }
         dataset = "mtl"
 
