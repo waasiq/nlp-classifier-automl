@@ -40,30 +40,8 @@ logger = logging.getLogger(__name__)
 
 FINAL_TEST_DATASET= "yelp"
 
-
-def main_loop(
-        dataset: str,
-        output_path: Path,
-        data_path: Path,
-        seed: int,
-        approach: str,
-        val_size: float = 0.2,
-        vocab_size: int = 10000,
-        token_length: int = 128,
-        epochs: int = 5,
-        batch_size: int = 32,
-        lr: float = 0.0001,
-        weight_decay: float = 0.01,
-        ffnn_hidden: int = 128,
-        lstm_emb_dim: int = 128,
-        lstm_hidden_dim: int = 128,
-        fraction_layers_to_finetune: float = 1.0,
-        data_fraction: int = 1.0,
-        load_path: Path = None,
-        is_mtl: bool = False,
-        model_name: str = "distilbert-base-cased",
-    ) -> None:
-    
+# function load the dataset and create dfs
+def load_dataset(dataset: str, data_path: Path, val_size: float, seed: int, is_mtl: bool = False):
     match dataset:
         case "ag_news":
             dataset_class = AGNewsDataset
@@ -82,11 +60,11 @@ def main_loop(
 
     if is_mtl:
         dataset_classes = {
-            #"ag_news": AGNewsDataset,
+            "ag_news": AGNewsDataset,
             "imdb": IMDBDataset,
             "amazon": AmazonReviewsDataset,
-            #"dbpedia": DBpediaDataset,
-            #"yelp": YelpDataset,
+            "dbpedia": DBpediaDataset,
+            "yelp": YelpDataset,
         }
         dataset = "mtl"
 
@@ -121,6 +99,7 @@ def main_loop(
         fraction_layers_to_finetune: float = 1.0,
         load_path: Path = None,
         pipeline_directory: Path | None = None,
+        model_name: str = "distilbert-base-uncased",
     ) -> None:
     #create run_name with random 6 characters
     run_name = f"{''.join(dataset_classes.keys())}_config_{pipeline_directory}_{np.random.randint(100000, 999999)}"
@@ -142,7 +121,7 @@ def main_loop(
     logger.info(
         [f"Train size: {len(train_dfs[dataset])}, Validation size: {len(val_dfs[dataset])}, Test size: {len(test_dfs[dataset])}" for dataset in dataset_classes.keys()]
     )
-    # plotter.add_data_distribution(train_dfs, val_dfs, test_dfs)
+    plotter.add_data_distribution(train_dfs, val_dfs, test_dfs)
     logger.info(f"Number of classes: {num_classes}")
 
     # Initialize the TextAutoML instance with the best parameters

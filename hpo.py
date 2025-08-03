@@ -62,6 +62,7 @@ def neps_training_wrapper(args, dataset_classes, train_dfs, val_dfs, test_dfs, n
             lstm_emb_dim=args["model_config"]["lstm_emb_dim"],
             lstm_hidden_dim=args["model_config"]["lstm_hidden_dim"],
             load_path=Path(args["load_path"]) if args["load_path"] else None,
+            model_name=args["model_name"],
         )
     return evaluate_pipeline
 

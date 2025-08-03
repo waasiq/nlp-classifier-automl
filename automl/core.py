@@ -221,7 +221,10 @@ class TextAutoML:
         val_loaders: dict[str, DataLoader],
         load_path: Path=None,
         save_path: Path=None,
-    ):
+    ):    
+        early_stop_patience = 2
+        best_val_accuracy = 0
+    
         if self.approach == "transformer":
             head_params = chain(
                             self.model.shared_common_backbone.parameters(),
@@ -230,7 +233,8 @@ class TextAutoML:
             optimizer_grouped_parameters = [
                 {"params": self.model.backbone.parameters(), "lr": 5e-5}, # BERT backbone LR
                 {"params": head_params, "lr": 2e-5}                       # Custom head LR
-            ]
+            ]  
+ 
             optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=self.weight_decay)
             num_training_steps = sum(len(loader) for loader in train_loaders.values()) * self.epochs
             num_warmup_steps = int(num_training_steps * 0.1) 

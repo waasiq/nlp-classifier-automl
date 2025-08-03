@@ -35,11 +35,17 @@ class WandbLogger:
         self.log_dir = log_dir
         self.training_time = time.time()
         self.epoch_time = time.time()
+        self._step_counter = 0  # Add monotonic step counter for NEPS
+        self._step_counter = 0  # Internal step counter to ensure monotonic steps
 
+        # Initialize wandb with unique run ID to avoid conflicts in NEPS
+        import uuid
+        unique_run_id = f"{run_name}_{uuid.uuid4().hex[:8]}" if run_name else None
+        
         # Initialize wandb
         wandb.init(
             project=project_name,
-            name=run_name,
+            name=unique_run_id,
             config=config,
             dir=str(log_dir),
             reinit=True,
@@ -47,20 +53,21 @@ class WandbLogger:
         )
 
     def add_data_distribution(self, train_dfs, val_dfs, test_dfs):
+        # Use internal step counter for data distribution logging
         for task, df in train_dfs.items():          
             counts = df["label"].value_counts().sort_index()
             wandb.log({f"{task}/class_hist": wandb.plot.bar(
                 wandb.Table(data=[[c, n] for c, n in counts.items()],
                             columns=["class", "count"]),
                 "class", "count",
-                title=f"{task} class distribution")})
+                title=f"{task} class distribution")}, step=self._get_next_step())
         
         sizes = {t: len(df) for t, df in train_dfs.items()}
         wandb.log({"tasks/train_size": wandb.plot.bar(
             wandb.Table(data=[[t, n] for t, n in sizes.items()],
                         columns=["task", "train_samples"]),
             "task", "train_samples",
-            title="Train samples per task")})
+            title="Train samples per task")}, step=self._get_next_step())
 
         final_sizes = {
             "train": sizes,
@@ -68,9 +75,17 @@ class WandbLogger:
             "test":  {t: len(test_dfs[t]) for t in test_dfs},
         }
 
-        wandb.log({"split_sizes": wandb.Table(columns=["split", "task", "n"],
-                    data=[(s, t, n) for s, d in final_sizes.items() for t, n in d.items()])})
+        split_sizes_table = wandb.Table(
+            columns=["split", "task", "n"],
+            data=[(s, t, n) for s, d in final_sizes.items() for t, n in d.items()]
+        )
+        wandb.log({"split_sizes": split_sizes_table}, step=self._get_next_step())
 
+
+    def _get_next_step(self):
+        """Get the next monotonic step number."""
+        self._step_counter += 1
+        return self._step_counter
 
     def step(self, total_loss: float, task, step):
         """
@@ -82,13 +97,28 @@ class WandbLogger:
             optimizer (torch.optim.Optimizer): The optimizer used during training.
         """
         print('hereeee')
-        wandb.log({f"{task}/mean_train_loss": total_loss}, step=step)
+        # Use internal step counter instead of provided step to ensure monotonic ordering
+        monotonic_step = self._get_next_step()
+        wandb.log({f"{task}/mean_train_loss": total_loss}, step=monotonic_step)
 
     def log_evaluation(self, epoch, task, val_accuracy, val_auc):
-        wandb.log({f"{task}/val_acc": val_accuracy, f"{task}/val_auc": val_auc}, step=epoch)
+        # Use internal step counter instead of epoch to ensure monotonic ordering
+        monotonic_step = self._get_next_step()
+        wandb.log({
+            f"{task}/val_acc": val_accuracy, 
+            f"{task}/val_auc": val_auc,
+            f"{task}/epoch": epoch  # Log original epoch as a metric instead
+        }, step=monotonic_step)
 
     def epoch_info(self, epoch, mean_val_accuracy, mean_val_auc, mean_train_loss):
-        wandb.log({"mean_val_accuracy": mean_val_accuracy, "mean_val_roc_auc": mean_val_auc, "mean_train_loss": mean_train_loss}, step=epoch)
+        # Use internal step counter instead of epoch to ensure monotonic ordering
+        monotonic_step = self._get_next_step()
+        wandb.log({
+            "mean_val_accuracy": mean_val_accuracy, 
+            "mean_val_roc_auc": mean_val_auc, 
+            "mean_train_loss": mean_train_loss,
+            "epoch": epoch  # Log original epoch as a metric instead
+        }, step=monotonic_step)
 
     def close(self):
         """

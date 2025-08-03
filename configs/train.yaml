@@ -25,7 +25,7 @@ val_size: 0.1
 
 # Training approach
 
-approach: transformer  # choices: [lstm, transformer]
+approach: lstm  # choices: [lstm, transformer]
 
 # Data & training hyper‑params
 
@@ -36,9 +36,10 @@ batch_size: 64
 lr: 0.001
 weight_decay: 0.1
 data_fraction: 0.001     # (0, 1]
-model_name: 'distilbert-base-cased'
-# Model‑specific settings
+model_name: "distilbert-base-cased"  # choices: [distilbert-base-cased, distilroberta-base, roberta-base ] 
 
+# Model‑specific settings
+# ----------------------
 lstm_emb_dim: 64          # lstm_emb_dim
 lstm_hidden_dim: 64       # lstm_hidden_dim
 
