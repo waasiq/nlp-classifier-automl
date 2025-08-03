@@ -43,6 +43,7 @@ class WandbLogger:
             config=config,
             dir=str(log_dir),
             reinit=True,
+            resume=False,
         )
 
     def add_data_distribution(self, train_dfs, val_dfs, test_dfs):

@@ -205,7 +205,7 @@ def main_loop(
     else:
         # This is the setting for the exam dataset, you will not have access to the labels
         logger.info(f"No test labels available for dataset '{dataset_classes.keys()}'")
-
+    plotter.close()
     return user_result
 
 if __name__ == "__main__":

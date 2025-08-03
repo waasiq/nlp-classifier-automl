@@ -31,7 +31,7 @@ approach: lstm  # choices: [tfidf, lstm, transformer]
 
 vocab_size: 20000
 token_length: 128
-epochs: 1
+epochs: 10
 batch_size: 2048
 lr: 0.001
 weight_decay: 0.0
