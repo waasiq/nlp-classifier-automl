@@ -40,8 +40,10 @@ logger = logging.getLogger(__name__)
 
 
 def neps_training_wrapper(args):
-    def evaluate_pipeline(lr, data_fraction):
+    def evaluate_pipeline(pipeline_directory, lr, data_fraction):
+        print(f"pipeline_directory {pipeline_directory}")
         return main_loop(
+            pipeline_directory=pipeline_directory,
             dataset=args["dataset"],
             output_path=Path(args["output_path"]).absolute(),
             data_path=Path(args["data_path"]).absolute(),

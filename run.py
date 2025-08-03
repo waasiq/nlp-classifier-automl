@@ -15,14 +15,16 @@ python run.py \
 """
 from __future__ import annotations
 import sys
-import argparse
+import math
 import logging
 import numpy as np
 from pathlib import Path
 from sklearn.metrics import accuracy_score, classification_report
 import yaml
 from wandb_log import get_logger
-from automl.core import TextAutoML
+from automl.core import TextAutoML, custom_multiclass_roc_auc
+from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import label_binarize
 from automl.datasets import (
     AGNewsDataset,
     AmazonReviewsDataset,
@@ -58,6 +60,7 @@ def main_loop(
         data_fraction: int = 1.0,
         load_path: Path = None,
         is_mtl: bool = False,
+        pipeline_directory: Path | None = None,
     ) -> None:
     
     match dataset:
@@ -86,7 +89,7 @@ def main_loop(
         }
         dataset = "mtl"
 
-    run_name = f"{dataset}_seed={seed}_approach={approach}_lr={lr}"
+    run_name = f"{dataset}_config_{pipeline_directory}"
     plotter = get_logger(log_dir=Path(output_path) / run_name, run_name=run_name)
 
     logger.info("Fitting Text AutoML")
@@ -141,7 +144,7 @@ def main_loop(
     )
 
     # Fit the AutoML model on the training and validation datasets
-    val_err = automl.fit(
+    user_result = automl.fit(
         train_dfs,
         val_dfs,
         num_classes=num_classes,
@@ -151,18 +154,35 @@ def main_loop(
     logger.info("Training complete")
 
     # Predict on the test set
+    val_err = user_result.get("objective_to_minimize", math.inf)
+    test_roc_auc_accumulated = 0.0
     for task, test_df in test_dfs.items():
-        test_preds, test_labels = automl.predict(test_df, task)
-
+        (test_preds, test_labels), test_probs = automl.predict(test_df, task)
+        n_classes = num_classes[task]
+        y_true_binarized = label_binarize(test_labels, classes=np.arange(n_classes))
+        
+        if n_classes == 2:
+            auc =  roc_auc_score(test_labels, test_probs[:, 1])
+        else:
+        # Multiclass classification - use one-vs-rest approach
+            auc = custom_multiclass_roc_auc(y_true_binarized, test_probs)
+        test_roc_auc_accumulated += auc
+        user_result["info_dict"][f"{task}_roc_auc_score"] = float(auc)
+        output_path = Path(output_path)
         # Write the predictions of X_test to disk
         logger.info("Writing predictions to disk")
-        with (output_path / "score.yaml").open("w") as f:
+        task_output_path = output_path / task
+        task_output_path.mkdir(parents=True, exist_ok=True)
+        with (task_output_path / "score.yaml").open("w") as f:
             yaml.safe_dump({"val_err": float(val_err)}, f)
-        logger.info(f"Saved validataion score at {output_path / 'score.yaml'}")
-        with (output_path / "test_preds.npy").open("wb") as f:
+        logger.info(f"Saved validataion score at {task_output_path / 'score.yaml'}")
+        with (task_output_path / "test_preds.npy").open("wb") as f:
             np.save(f, test_preds)
-        logger.info(f"Saved tet prediction at {output_path / 'test_preds.npy'}")
+        logger.info(f"Saved tet prediction at {task_output_path / 'test_preds.npy'}")
 
+    # Average the ROC AUC scores across all tasks
+    average_roc_auc = test_roc_auc_accumulated / len(test_dfs)
+    user_result["info_dict"]["test_mean_roc_auc"] = float(average_roc_auc)
     # In case of running on the final exam data, also add the predictions.npy
     # to the correct location for auto evaluation.
     if dataset == FINAL_TEST_DATASET: 
@@ -185,7 +205,7 @@ def main_loop(
         # This is the setting for the exam dataset, you will not have access to the labels
         logger.info(f"No test labels available for dataset '{dataset}'")
 
-    return val_err
+    return user_result
 
 def parse_arguments(parser):
 

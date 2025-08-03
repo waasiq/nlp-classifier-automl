@@ -31,11 +31,11 @@ approach: lstm  # choices: [tfidf, lstm, transformer]
 
 vocab_size: 1000
 token_length: 128
-epochs: 100
+epochs: 10
 batch_size: 2048
 lr: 0.001
 weight_decay: 0.0
-data_fraction: 0.001     # (0, 1]
+data_fraction: 0.01     # (0, 1]
 
 # Model‑specific settings
 

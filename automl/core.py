@@ -218,14 +218,13 @@ class TextAutoML:
         self.model.to(self.device)
         # assert dataset is not None, f"`dataset` cannot be None here!"
         # loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-        val_acc = self._train_loop(
+        return self._train_loop(
             train_loaders,
             val_loaders,
             load_path=load_path,
             save_path=save_path,
         )
 
-        return 1 - val_acc
 
     def _train_loop(
         self, 
@@ -234,6 +233,8 @@ class TextAutoML:
         load_path: Path=None,
         save_path: Path=None,
     ):  
+        early_stop_patience = 2
+        best_val_accuracy = 0
         hidden = [p for p in self.model.parameters() if p.ndim >= 2]
         others = [p for p in self.model.parameters() if p.ndim < 2]
         optimizer = SingleDeviceMuonWithAuxAdam(
@@ -265,7 +266,7 @@ class TextAutoML:
             optimizer.load_state_dict(_states["optimizer_state_dict"])
             start_epoch = _states["epoch"]
             logger.info(f"Resuming from checkpoint at {start_epoch}")
-        for epoch in range(start_epoch, self.epochs):
+        for i, epoch in enumerate(range(start_epoch, self.epochs)):
             train_iters = {task: iter(loader) for task, loader in train_loaders.items()}
             total_loss = 0
             steps_in_accumulation = 0
@@ -306,7 +307,6 @@ class TextAutoML:
                 optimizer.step()
                 total_loss += loss.item()
                 steps_in_accumulation += 1
-
             logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
             if self.val_texts:
                 total_val_accuracys = 0.0
@@ -331,6 +331,14 @@ class TextAutoML:
                     total_val_auc += auc
                 mean_val_accuracy = total_val_accuracys / len(train_loaders)
                 mean_val_auc = total_val_auc / len(train_loaders)
+                if mean_val_accuracy > best_val_accuracy:
+                    best_val_accuracy = mean_val_accuracy
+                    early_stop_patience = 2
+                else:
+                    early_stop_patience -= 1
+                    if early_stop_patience <= 0:
+                        logger.info(f"Early stopping at epoch {epoch + 1}. Best validation accuracy: {best_val_accuracy:.4f}")
+                        break
                 self.plotter.epoch_info(
                     mean_val_accuracy=mean_val_accuracy, 
                     mean_val_auc=mean_val_auc, 
@@ -351,7 +359,14 @@ class TextAutoML:
                 save_path / "checkpoint.pth"
             )   
         torch.cuda.empty_cache()
-        return mean_val_accuracy or 0.0
+        return {
+            "objective_to_minimize": 1 - mean_val_accuracy if mean_val_accuracy else 0.0, 
+            "info_dict": {
+                "mean_val_auc": float(mean_val_auc) or 0.0, 
+                "epochs": i, 
+                "train_loss": total_loss / steps_in_accumulation
+                }
+            }
 
     def _predict(self, val_loader: DataLoader, task):
         self.model.eval()
@@ -419,7 +434,7 @@ class TextAutoML:
             raise ValueError(f"Unrecognized approach: {self.approach}")
             # handling any possible tokenization
         
-        return self._predict(_loader, task)[0]
+        return self._predict(_loader, task)
 
 
 def freeze_layers(model, fraction_layers_to_finetune: float=1.0) -> None:

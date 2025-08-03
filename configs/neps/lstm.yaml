@@ -10,10 +10,10 @@ pipeline_space:
   #   is_fidelity: True
 
   data_fraction:
-    lower: 0.1
+    lower: 0.01
     upper: 1.0
     is_fidelity: True
 
 optimizer: "successive_halving"
 max_evaluations_total: 100
-root_directory: neps_results_df/
+root_directory: neps_results/
