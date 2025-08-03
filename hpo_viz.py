@@ -50,7 +50,7 @@ class HPOVisualization:
             raise RuntimeError("No valid report.yaml files found.")
 
     def plot_incumbent(self, save: Path | None = None) -> None:
-        """Monotonic incumbent‑over‑configs curve."""
+        """Monotonic incumbent over configs curve."""
         incumbent = np.minimum.accumulate(self.val_losses)
         steps = np.arange(1, len(incumbent) + 1)
 

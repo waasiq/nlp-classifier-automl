@@ -36,55 +36,78 @@ class FidelityCorrelationTracker:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.results = []
         self.tracking_file = self.output_dir / "fidelity_tracking.json"
-        
+        self.h_params = ['bert_lr', 'batch_size', 'num_bert_layers_to_unfreeze']
+
     def log_evaluation(self, config: Dict[str, Any], loss: float):
-        result = {
-            'trial_id': len(self.results),
-            'lr': config.get('lr'),
-            'data_fraction': config.get('data_fraction'),
-            'loss': loss,
-            'timestamp': pd.Timestamp.now().isoformat()
-        }
-        
+        result = {**config, 'loss': loss, 'timestamp': pd.Timestamp.now().isoformat()}
         self.results.append(result)
-        
+
         with open(self.tracking_file, 'w') as f:
             json.dump(self.results, f, indent=2)
-        
-        if len(self.results) % 10 == 0 and len(self.results) >= 20:
+
+        if len(self.results) % 10 == 0 and len(self.results) >= 10:
             self.analyze_current_correlation()
+
+    def _calculate_paired_correlation(self, df: pd.DataFrame) -> Optional[Tuple[float, float, List[float], List[float]]]:
+        """
+        Calculates Spearman correlation on paired low and high fidelity runs.
+
+        Returns:
+            A tuple of (correlation, p_value, low_losses, high_losses) or None.
+        """
+        if not all(p in df.columns for p in self.h_params):
+            logger.warning("Hyperparameter columns not found in results; cannot compute paired correlation.")
+            return None
+
+        low_fidelity_runs = df[df['data_fraction'] <= 0.5]
+        high_fidelity_runs = df[df['data_fraction'] >= 0.7]
+
+        # 2. Merge dataframes on the hyperparameter keys to find pairs
+        # This finds configurations that have been evaluated at BOTH low and high fidelity.
+        paired_df = pd.merge(
+            low_fidelity_runs,
+            high_fidelity_runs,
+            on=self.h_params,
+            suffixes=('_low', '_high')
+        )
+
+        # 3. Check if we have enough pairs for a meaningful correlation
+        if len(paired_df) < 3:
+            return None
+
+        # 4. Extract the paired lists of losses
+        low_losses = paired_df['loss_low'].tolist()
+        high_losses = paired_df['loss_high'].tolist()
+
+        # 5. Calculate correlation on the correctly paired data
+        corr, p_val = spearmanr(low_losses, high_losses)
+        return corr, p_val, low_losses, high_losses
+
     
     def analyze_current_correlation(self):
+        if len(self.results) < 2:
+            return
         df = pd.DataFrame(self.results)
         
-        low_fidelity = df[df['data_fraction'] <= 0.3]
-        high_fidelity = df[df['data_fraction'] >= 0.7]
+        # Use the new, correct correlation logic
+        correlation_result = self._calculate_paired_correlation(df)
+        logger.info(f"Current results: {len(df)} total, "
+                    f"{len(df[df['data_fraction'] <= 0.5])} low, "
+                    f"{len(df[df['data_fraction'] >= 0.7])} high fidelity")
+
+        if correlation_result is None:
+            logger.info("Not enough paired low/high fidelity runs to analyze correlation yet.")
+            return
+            
+        corr, p_val, low_losses, _ = correlation_result
+        num_pairs = len(low_losses)
         
-        logger.info(f"Current results: {len(df)} total, {len(low_fidelity)} low fidelity, {len(high_fidelity)} high fidelity")
+        logger.info(f"🔍 Fidelity Correlation Analysis (based on {num_pairs} paired configurations):")
+        logger.info(f"   Spearman correlation: {corr:.4f}")
+        logger.info(f"   P-value: {p_val:.4f}")
         
-        if len(low_fidelity) >= 5 and len(high_fidelity) >= 5:
-            corr, p_val = spearmanr(low_fidelity['loss'], high_fidelity['loss'])
-            
-            logger.info(f"🔍 Fidelity Correlation Analysis:")
-            logger.info(f"   Spearman correlation: {corr:.4f}")
-            logger.info(f"   P-value: {p_val:.4f}")
-            logger.info(f"   Sample sizes: {len(low_fidelity)} (low) vs {len(high_fidelity)} (high)")
-            
-            corr_result = {
-                'correlation': float(corr),
-                'p_value': float(p_val),
-                'n_low_fidelity': len(low_fidelity),
-                'n_high_fidelity': len(high_fidelity),
-                'interpretation': self._interpret_correlation(corr),
-                'timestamp': pd.Timestamp.now().isoformat()
-            }
-            
-            corr_file = self.output_dir / "correlation_analysis.json"
-            with open(corr_file, 'w') as f:
-                json.dump(corr_result, f, indent=2)
-            
-            self.create_correlation_plot(df)
-    
+        self.create_correlation_plot(df)
+
     def _interpret_correlation(self, correlation: float) -> str:
         abs_corr = abs(correlation)
         if abs_corr >= 0.8:
@@ -121,7 +144,7 @@ class FidelityCorrelationTracker:
             
             # Plot 3: Loss distribution by fidelity level
             df['fidelity_level'] = pd.cut(df['data_fraction'], 
-                                        bins=[0, 0.3, 0.7, 1.0], 
+                                        bins=[0, 0.5, 0.7, 1.0], 
                                         labels=['Low', 'Medium', 'High'])
             
             fidelity_groups = [group['loss'].values for name, group in df.groupby('fidelity_level') if len(group) > 0]
@@ -164,84 +187,33 @@ class FidelityCorrelationTracker:
         
         df = pd.DataFrame(self.results)
         
+            
         report_lines = [
             "=== FIDELITY CORRELATION FINAL REPORT ===",
             f"Total Evaluations: {len(df)}",
-            f"Data Fraction Range: {df['data_fraction'].min():.2f} - {df['data_fraction'].max():.2f}",
-            f"Loss Range: {df['loss'].min():.4f} - {df['loss'].max():.4f}",
-            ""
         ]
-        
-        low_fidelity = df[df['data_fraction'] <= 0.3]
-        medium_fidelity = df[(df['data_fraction'] > 0.3) & (df['data_fraction'] < 0.7)]
-        high_fidelity = df[df['data_fraction'] >= 0.7]
-        
-        report_lines.extend([
-            "--- FIDELITY BREAKDOWN ---",
-            f"Low Fidelity (≤0.3): {len(low_fidelity)} evaluations",
-            f"Medium Fidelity (0.3-0.7): {len(medium_fidelity)} evaluations", 
-            f"High Fidelity (≥0.7): {len(high_fidelity)} evaluations",
-            ""
-        ])
-        
-        if len(low_fidelity) >= 3 and len(high_fidelity) >= 3:
-            corr, p_val = spearmanr(low_fidelity['loss'], high_fidelity['loss'])
+
+        correlation_result = self._calculate_paired_correlation(df)
+
+        if correlation_result:
+            corr, p_val, low_losses, high_losses = correlation_result
             report_lines.extend([
-                "--- CORRELATION ANALYSIS ---",
+                "\n--- PAIRED CORRELATION ANALYSIS ---",
+                f"Number of paired configurations found: {len(low_losses)}",
                 f"Spearman Correlation: {corr:.4f}",
                 f"P-value: {p_val:.4f}",
                 f"Interpretation: {self._interpret_correlation(corr)}",
-                ""
             ])
-            
-            low_best = low_fidelity['loss'].min()
-            high_best = high_fidelity['loss'].min()
-            
-            report_lines.extend([
-                "--- PERFORMANCE COMPARISON ---",
-                f"Best Low Fidelity Loss: {low_best:.4f}",
-                f"Best High Fidelity Loss: {high_best:.4f}",
-                f"Performance Gap: {abs(low_best - high_best):.4f}",
-                ""
-            ])
-        
-        report_lines.extend([
-            "--- RECOMMENDATIONS ---"
-        ])
-        
-        if len(low_fidelity) >= 3 and len(high_fidelity) >= 3:
-            corr, _ = spearmanr(low_fidelity['loss'], high_fidelity['loss'])
-            if abs(corr) > 0.6:
-                report_lines.extend([
-                    "✅ Strong correlation detected!",
-                    "• Low fidelity evaluations are reliable predictors",
-                    "• Consider more aggressive early stopping",
-                    "• Successive halving strategy is well-suited"
-                ])
-            elif abs(corr) > 0.3:
-                report_lines.extend([
-                    "⚠️ Moderate correlation detected",
-                    "• Low fidelity provides useful but imperfect information", 
-                    "• Current fidelity strategy seems reasonable",
-                    "• Monitor correlation as optimization progresses"
-                ])
-            else:
-                report_lines.extend([
-                    "❌ Weak correlation detected",
-                    "• Low fidelity may not be reliable for this problem",
-                    "• Consider increasing minimum data fraction",
-                    "• Alternative fidelity measures might be needed"
-                ])
-        
+        else:
+            report_lines.append("\nCould not compute a final correlation score: not enough paired data.")
+
         report_text = "\n".join(report_lines)
-        
-        # Save report
+
         report_file = self.output_dir / "final_correlation_report.txt"
         with open(report_file, 'w') as f:
             f.write(report_text)
-        
+                
         logger.info(f"📄 Final report saved to {report_file}")
-        print("\n" + report_text)
 
 
 def neps_training_wrapper_with_tracking(args, tracker: FidelityCorrelationTracker, dataset_classes, train_dfs, val_dfs, test_dfs, num_classes, out_dir: Path):
@@ -250,7 +222,7 @@ def neps_training_wrapper_with_tracking(args, tracker: FidelityCorrelationTracke
         # Extract parameters from kwargs or use defaults from config
         lr = kwargs.get('lr', args["lr"])  # fallback to config lr
         batch_size = kwargs.get('batch_size', args["batch_size"])
-        bert_lr = kwargs.get('bert_lr', args.get("bert_lr", 5e-5))
+        bert_lr = kwargs.get('bert_lr', args.get("bert_lr", 0.00005))
         num_bert_layers_to_unfreeze = kwargs.get('num_bert_layers_to_unfreeze', 2)
         
         # Run the evaluation - main_loop returns val_err (float) despite -> None annotation

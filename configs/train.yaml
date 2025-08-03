@@ -33,10 +33,10 @@ epochs: 3
 batch_size: 32
 lr: 2e-4
 weight_decay: 0.1
-data_fraction: 0.001     # (0, 1]
+#data_fraction: 0.001     # (0, 1]
 
 # Transformer Model‑specific settings
-bert_lr: 5e-5          # bert_lr
+bert_lr: 0.00005          # bert_lr
 num_bert_layers_to_unfreeze: 2  # num_bert_layers_to_unfreeze
 model_name: "distilroberta-base"  # choices: [distilbert-base-cased, distilroberta-base, roberta-base]
 

@@ -42,7 +42,7 @@ class TextAutoML:
         lr=1e-4,
         weight_decay=0.0,
         model_name="distilbert-base-cased",
-        bert_lr=5e-5,
+        bert_lr=0.00005,
         ffnn_hidden=128,
         lstm_emb_dim=128,
         lstm_hidden_dim=128,
@@ -158,7 +158,7 @@ class TextAutoML:
             }
             train_loaders = {
                 task:
-                DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
+                DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
                 for task, dataset in datasets.items()
             }
             _datasets = {
@@ -320,9 +320,22 @@ class TextAutoML:
                 if self.scheduler:
                     self.scheduler.step()
 
-                total_loss += loss.item()
+                current_loss = loss.item()
+                if torch.isnan(loss) or not torch.isfinite(loss):
+                    logger.warning(f"NaN or infinite loss detected at epoch {epoch + 1}, step {steps_in_accumulation}")
+                    current_loss = 0.0  # Set to 0 to avoid NaN propagation
+                    
+                total_loss += current_loss
                 steps_in_accumulation += 1
-            logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
+            
+            # Check for problematic total loss
+            if steps_in_accumulation == 0:
+                logger.warning(f"No training steps completed in epoch {epoch + 1}")
+                total_loss = 0.0
+            else:
+                avg_loss = total_loss / steps_in_accumulation if steps_in_accumulation > 0 else 0.0
+                logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f} (avg: {avg_loss:.4f})")
+            
             if self.val_texts:
                 total_val_accuracys = 0.0
                 total_val_auc = 0.0

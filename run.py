@@ -35,6 +35,7 @@ from automl.datasets import (
 )
 from hydra import compose, initialize
 from omegaconf import OmegaConf
+import copy 
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ def load_dataset(dataset: str, data_path: Path, val_size: float, seed: int, is_m
     
     data_path = Path(data_path) if isinstance(data_path, str) else data_path
     data_infos = {dataset: dataset_class(data_path).create_dataloaders(val_size=val_size, random_state=seed) for dataset, dataset_class in dataset_classes.items()}
+
     train_dfs = {dataset: data_info['train_df'] for dataset, data_info in data_infos.items()}
     val_dfs = {dataset: data_info.get('val_df', None) for dataset, data_info in data_infos.items()}
     test_dfs = {dataset: data_info['test_df'] for dataset, data_info in data_infos.items()}
@@ -99,13 +101,12 @@ def main_loop(
         load_path: Path = None,
         pipeline_directory: Path | None = None,
         model_name: str = "distilbert-base-uncased",
-        bert_lr: float = 5e-5,
+        bert_lr: float = 0.00005,
         num_bert_layers_to_unfreeze: int = 2, 
     ) -> None:
-    #create run_name with random 6 characters
-    run_name = f"{''.join(dataset_classes.keys())}_config_{pipeline_directory}_{np.random.randint(100000, 999999)}"
-    
-    # Handle case where pipeline_directory is None (when running directly, not through NEPS)
+    train_dfs = copy.deepcopy(train_dfs)
+
+    run_name = f"{''.join(dataset_classes.keys())}_config_{pipeline_directory}_{np.random.randint(100000, 999999)}"    
     log_dir = pipeline_directory if pipeline_directory is not None else output_path / "logs"
     plotter = get_logger(log_dir=log_dir, run_name=run_name)
 
@@ -114,13 +115,33 @@ def main_loop(
     np.random.seed(seed)
 
     n_class_samples = round(sum(len(v) for v in train_dfs.values()) * data_fraction / len(train_dfs))
+    min_samples_per_dataset = 10  
+    n_class_samples = max(n_class_samples, min_samples_per_dataset)
+    
     for dataset, train_df in train_dfs.items():
+        actual_samples = min(n_class_samples, len(train_df))
+        if actual_samples == 0:
+            logger.warning(f"No training samples available for dataset {dataset}. Skipping...")
+            continue
+            
         _subsample = np.random.choice(
             list(range(len(train_df))),
-            size=n_class_samples,
-            replace=len(train_df) < n_class_samples,
+            size=actual_samples,
+            replace=len(train_df) < actual_samples,
         )
         train_dfs[dataset] = train_df.iloc[_subsample]
+
+    total_train_samples = sum(len(df) for df in train_dfs.values())
+    if total_train_samples == 0:
+        logger.error("No training samples available across all datasets. Cannot proceed with training.")
+        return float('inf')  
+    
+    min_samples_per_batch = batch_size * 2  
+    if total_train_samples < min_samples_per_batch:
+        logger.warning(f"Very small training set ({total_train_samples} samples) relative to batch size ({batch_size}). This may cause training instability.")
+        effective_batch_size = min(batch_size, max(1, total_train_samples // 4))
+        logger.info(f"Reducing batch size from {batch_size} to {effective_batch_size} for stability.")
+        batch_size = effective_batch_size
 
     logger.info(
         [f"Train size: {len(train_dfs[dataset])}, Validation size: {len(val_dfs[dataset])}, Test size: {len(test_dfs[dataset])}" for dataset in dataset_classes.keys()]
@@ -161,57 +182,66 @@ def main_loop(
     val_err = user_result.get("objective_to_minimize", math.inf)
     test_roc_auc_accumulated = 0.0
     test_n = 0
+    all_test_preds = {}  # Dictionary to store predictions for each task
+
+    # --- Main Evaluation Loop ---
     for task, test_df in test_dfs.items():
-        if task == FINAL_TEST_DATASET:
-            continue
+        # Get predictions for the current task
         (test_preds, test_labels), test_probs = automl.predict(test_df, task)
-        n_classes = num_classes[task]
-        y_true_binarized = label_binarize(test_labels, classes=np.arange(n_classes))
-        
-        if n_classes == 2:
-            auc =  roc_auc_score(test_labels, test_probs[:, 1])
-        else:
-        # Multiclass classification - use one-vs-rest approach
-            auc = custom_multiclass_roc_auc(y_true_binarized, test_probs)
-        test_roc_auc_accumulated += auc
-        test_n += 1
-        user_result["info_dict"][f"{task}_roc_auc_score"] = float(auc)
-        output_path = Path(output_path)
-        # Write the predictions of X_test to disk
-        logger.info("Writing predictions to disk")
+        all_test_preds[task] = test_preds # Store predictions for this task
+
+        # Save predictions for this specific task
         task_output_path = output_path / task
         task_output_path.mkdir(parents=True, exist_ok=True)
-        with (task_output_path / "score.yaml").open("w") as f:
-            yaml.safe_dump({"val_err": float(val_err)}, f)
-        logger.info(f"Saved validataion score at {task_output_path / 'score.yaml'}")
         with (task_output_path / "test_preds.npy").open("wb") as f:
             np.save(f, test_preds)
-        logger.info(f"Saved tet prediction at {task_output_path / 'test_preds.npy'}")
+        logger.info(f"Saved test predictions for {task} at {task_output_path / 'test_preds.npy'}")
 
-    # Average the ROC AUC scores across all tasks
-    average_roc_auc = test_roc_auc_accumulated / test_n
-    user_result["info_dict"]["test_mean_roc_auc"] = float(average_roc_auc)
-    # In case of running on the final exam data, also add the predictions.npy
-    # to the correct location for auto evaluation.
-    if FINAL_TEST_DATASET in dataset_classes.keys(): 
+        # Log metrics if labels are available
+        logger.info(f"--- Evaluating task: {task} ---")
+        if not np.isnan(test_labels).any():
+            acc = accuracy_score(test_labels, test_preds)
+            logger.info(f"Accuracy on test set for {task}: {acc}")
+            logger.info(f"Classification Report for {task}:\n{classification_report(test_labels, test_preds)}")
+
+            n_classes = num_classes[task]
+            y_true_binarized = label_binarize(test_labels, classes=np.arange(n_classes))
+            
+            if n_classes == 2:
+                auc = roc_auc_score(test_labels, test_probs[:, 1])
+            else:
+                auc = custom_multiclass_roc_auc(y_true_binarized, test_probs)
+            
+            # Accumulate AUC score for tasks that are not the final hold-out set
+            if task != FINAL_TEST_DATASET:
+                test_roc_auc_accumulated += auc
+                test_n += 1
+            
+            user_result["info_dict"][f"{task}_roc_auc_score"] = float(auc)
+        else:
+            logger.info(f"No test labels available for dataset '{task}'")
+    
+    # --- Post-Loop Finalization ---
+
+    # Calculate average ROC AUC for all evaluated tasks
+    if test_n > 0:
+        average_roc_auc = test_roc_auc_accumulated / test_n
+        user_result["info_dict"]["test_mean_roc_auc"] = float(average_roc_auc)
+
+    # Save predictions for the final exam dataset, if it exists
+    if FINAL_TEST_DATASET in all_test_preds:
+        final_preds = all_test_preds[FINAL_TEST_DATASET]
         test_output_path = output_path / "predictions.npy"
         test_output_path.parent.mkdir(parents=True, exist_ok=True)
         with test_output_path.open("wb") as f:
-            np.save(f, test_preds)
+            np.save(f, final_preds)
+        logger.info(f"Saved final submission predictions to {test_output_path}")
 
-    # Check if test_labels has missing data
-    if not np.isnan(test_labels).any():
-        acc = accuracy_score(test_labels, test_preds)
-        logger.info(f"Accuracy on test set: {acc}")
-        with (output_path / "score.yaml").open("a+") as f:
-            yaml.safe_dump({"test_err": float(1-acc)}, f)
-        
-        # Log detailed classification report for better insight
-        logger.info("Classification Report:")
-        logger.info(f"\n{classification_report(test_labels, test_preds)}")
-    else:
-        # This is the setting for the exam dataset, you will not have access to the labels
-        logger.info(f"No test labels available for dataset '{dataset_classes.keys()}'")
+    # Write the final validation error score once
+    with (output_path / "score.yaml").open("w") as f:
+        yaml.safe_dump({"val_err": float(val_err)}, f)
+    logger.info(f"Saved final validation score at {output_path / 'score.yaml'}")
+
     plotter.close()
     return user_result
 
