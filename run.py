@@ -182,7 +182,7 @@ def main_loop(
         logger.info(f"Saved tet prediction at {task_output_path / 'test_preds.npy'}")
 
     # Average the ROC AUC scores across all tasks
-    average_roc_auc = test_roc_auc_accumulated / len(test_n)
+    average_roc_auc = test_roc_auc_accumulated / test_n
     user_result["info_dict"]["test_mean_roc_auc"] = float(average_roc_auc)
     # In case of running on the final exam data, also add the predictions.npy
     # to the correct location for auto evaluation.
