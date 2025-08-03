@@ -17,7 +17,7 @@ defaults:
     - neps: lstm
 
 seed: 42
-dataset: yelp       # choices: [ag_news, imdb, amazon, dbpedia, yelp]
+dataset: ag_news       # choices: [ag_news, imdb, amazon, dbpedia, yelp]
 output_path: ./results2/      # if null ➜ "./results/dataset=${dataset}/seed=${seed}"
 load_path: null        # resume checkpoint
 data_path: 'data'        # if null ➜ "./.data"
@@ -31,8 +31,8 @@ approach: lstm  # choices: [tfidf, lstm, transformer]
 
 vocab_size: 20000
 token_length: 128
-epochs: 10
-batch_size: 2048
+epochs: 20
+batch_size: 256
 lr: 0.001
 weight_decay: 0.0
 data_fraction: 0.01     # (0, 1]

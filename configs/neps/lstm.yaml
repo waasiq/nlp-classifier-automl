@@ -10,10 +10,10 @@ pipeline_space:
   #   is_fidelity: True
 
   data_fraction:
-    lower: 0.1
+    lower: 0.5
     upper: 1.0
     is_fidelity: True
 
-optimizer: "hyperband"
+optimizer: "priorband"
 max_evaluations_total: 50
-root_directory: neps_results/
+root_directory: neps_results/priorband

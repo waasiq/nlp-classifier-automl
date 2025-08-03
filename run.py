@@ -49,10 +49,10 @@ def load_dataset(dataset: str, data_path: Path, val_size: float, seed: int, is_m
             dataset_class = IMDBDataset
         case "amazon":
             dataset_class = AmazonReviewsDataset
-        case "dbpedia":
-            dataset_class = DBpediaDataset
-        case "yelp":
-            dataset_class = YelpDataset
+        # case "dbpedia":
+        #     dataset_class = DBpediaDataset
+        # case "yelp":
+        #     dataset_class = YelpDataset
         case _:
             raise ValueError(f"Invalid dataset: {dataset}")
     
@@ -63,8 +63,8 @@ def load_dataset(dataset: str, data_path: Path, val_size: float, seed: int, is_m
             "ag_news": AGNewsDataset,
             "imdb": IMDBDataset,
             "amazon": AmazonReviewsDataset,
-            "dbpedia": DBpediaDataset,
-            "yelp": YelpDataset,
+            # "dbpedia": DBpediaDataset,
+            # "yelp": YelpDataset,
         }
         dataset = "mtl"
 
