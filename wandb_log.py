@@ -4,7 +4,9 @@ from pathlib import Path
 import torch
 import wandb
 import yaml
+import matplotlib.pyplot as plt
 
+import numpy as np
 
 class WandbLogger:
     """
@@ -42,7 +44,33 @@ class WandbLogger:
             dir=str(log_dir),
         )
 
-    def step(self, total_loss: float, epoch: int, optimizer: torch.optim.Optimizer):
+    def add_data_distribution(self, train_dfs, val_dfs, test_dfs):
+        for task, df in train_dfs.items():          
+            counts = df["label"].value_counts().sort_index()
+            wandb.log({f"{task}/class_hist": wandb.plot.bar(
+                wandb.Table(data=[[c, n] for c, n in counts.items()],
+                            columns=["class", "count"]),
+                "class", "count",
+                title=f"{task} class distribution")})
+        
+        sizes = {t: len(df) for t, df in train_dfs.items()}
+        wandb.log({"tasks/train_size": wandb.plot.bar(
+            wandb.Table(data=[[t, n] for t, n in sizes.items()],
+                        columns=["task", "train_samples"]),
+            "task", "train_samples",
+            title="Train samples per task")})
+
+        final_sizes = {
+            "train": sizes,
+            "val":   {t: len(val_dfs[t])  for t in val_dfs},
+            "test":  {t: len(test_dfs[t]) for t in test_dfs},
+        }
+
+        wandb.log({"split_sizes": wandb.Table(columns=["split", "task", "n"],
+                    data=[(s, t, n) for s, d in final_sizes.items() for t, n in d.items()])})
+
+
+    def step(self, total_loss: float, task, step):
         """
         Logs training metrics for the current epoch and updates run information.
 
@@ -51,77 +79,14 @@ class WandbLogger:
             epoch (int): The current epoch number.
             optimizer (torch.optim.Optimizer): The optimizer used during training.
         """
-        # run info yaml
-        with (self.training_directory / "run_info.yaml").open("w") as file:
-            yaml.dump(
-                {
-                    "epoch": epoch,
-                    "training_loss": total_loss,
-                    "training_time": time.time() - self.training_time,
-                    "epoch_time": time.time() - self.epoch_time,
-                    "finished": False,
-                },
-                file,
-            )
+        print('hereeee')
+        wandb.log({f"{task}/mean_train_loss": total_loss}, step=step)
 
-        # wandb logging
-        log_dict = {
-            "Loss/train": total_loss,
-            "epoch": epoch,
-            "training_time": time.time() - self.training_time,
-            "epoch_time": time.time() - self.epoch_time,
-        }
+    def log_evaluation(self, epoch, task, val_accuracy, val_auc):
+        wandb.log({f"{task}/val_acc": val_accuracy, f"{task}/val_auc": val_auc}, step=epoch)
 
-        # Log learning rates for each parameter group
-        for i, param_group in enumerate(optimizer.param_groups):
-            log_dict[f"Learning Rate/group{i}"] = param_group["lr"]
-
-        wandb.log(log_dict, step=epoch)
-
-    def log_evaluation(self, evaluation: dict, step: int = 0):
-        """
-        Logs evaluation metrics to wandb.
-
-        This method logs various evaluation metrics including:
-        - Validation loss (val_loss)
-        - Mean real data accuracy (mean_real_data_accuracy)
-        - Training loss (train_loss)
-        - Individual dataset accuracies and normalized accuracies for iris, wine, and breast_cancer datasets
-
-        Args:
-            evaluation (dict): Dictionary containing evaluation metrics from evaluate_model function.
-                Expected keys: val_loss, mean_real_data_accuracy, train_loss, and dataset-specific metrics.
-            step (int, optional): The current epoch or step. Defaults to 0.
-        """
-        # Log validation loss
-        if "val_loss" in evaluation:
-            wandb.log({"val_loss": evaluation["val_loss"]}, step=step)
-
-        # Log mean real data accuracy
-        if "mean_real_data_accuracy" in evaluation:
-            wandb.log(
-                {"mean_real_data_accuracy": evaluation["mean_real_data_accuracy"]},
-                step=step,
-            )
-
-        # Log individual dataset metrics
-        for dataset_name, metrics in evaluation.items():
-            if isinstance(metrics, dict) and "accuracy" in metrics:
-                wandb.log(
-                    {
-                        f"{dataset_name}/accuracy": metrics["accuracy"],
-                        f"{dataset_name}/norm_accuracy": metrics["norm_accuracy"],
-                    },
-                    step=step,
-                )
-
-        # Log training loss if available
-        if "train_loss" in evaluation:
-            wandb.log({"train_loss": evaluation["train_loss"]}, step=step)
-
-        # Log objective value for hyperparameter optimization
-        if "val_loss" in evaluation:
-            wandb.log({"objective_to_minimize": evaluation["val_loss"]}, step=step)
+    def epoch_info(self, epoch, mean_val_accuracy, mean_val_auc, mean_train_loss):
+        wandb.log({"mean_val_accuracy": mean_val_accuracy, "mean_val_roc_auc": mean_val_auc, "mean_train_loss": mean_train_loss}, step=epoch)
 
     def close(self):
         """
@@ -145,7 +110,6 @@ def get_logger(
     Creates and returns the appropriate logger based on the logger_name parameter.
     Args:
         logger_name (str): The name of the logger to create. Currently supports "wandb".
-        training_directory (str | Path): The directory where the logger will save its data.
         **kwargs: Additional keyword arguments to pass to the logger constructor.
     """
     return WandbLogger(log_dir=log_dir, **kwargs)

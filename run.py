@@ -14,7 +14,7 @@ python run.py \
 
 """
 from __future__ import annotations
-
+import sys
 import argparse
 import logging
 import numpy as np
@@ -30,6 +30,8 @@ from automl.datasets import (
     IMDBDataset,
     YelpDataset,
 )
+from hydra import compose, initialize
+from omegaconf import OmegaConf
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,7 @@ def main_loop(
         data_fraction: int = 1.0,
         load_path: Path = None,
         is_mtl: bool = False,
-        model_name: str = "distilroberta-base",
+        model_name: str = "distilbert-base-cased",
     ) -> None:
     
     match dataset:
@@ -77,16 +79,16 @@ def main_loop(
 
     if is_mtl:
         dataset_classes = {
-            "ag_news": AGNewsDataset,
+            #"ag_news": AGNewsDataset,
             "imdb": IMDBDataset,
             "amazon": AmazonReviewsDataset,
-            "dbpedia": DBpediaDataset,
-            "yelp": YelpDataset,
+            #"dbpedia": DBpediaDataset,
+            #"yelp": YelpDataset,
         }
         dataset = "mtl"
 
-    run_name = f"{dataset}_seed={seed}_approach={approach}"
-    # logger = get_logger(log_dir=Path(output_path) / run_name, run_name=run_name)
+    run_name = f"{dataset}_seed={seed}_approach={approach}_lr={lr}"
+    plotter = get_logger(log_dir=Path(output_path) / run_name, run_name=run_name)
 
     logger.info("Fitting Text AutoML")
 
@@ -102,6 +104,9 @@ def main_loop(
     
     sum_dp = sum(len(v) for v in train_dfs.values())
     n_class_samples = round(sum_dp * data_fraction / len(train_dfs))
+
+    np.random.seed(seed)
+
     for dataset, train_df in train_dfs.items():
         _subsample = np.random.choice(
             list(range(len(train_df))),
@@ -116,6 +121,7 @@ def main_loop(
     logger.info(
         [f"Train size: {len(train_dfs[dataset])}, Validation size: {len(val_dfs[dataset])}, Test size: {len(test_dfs[dataset])}" for dataset in dataset_classes.keys()]
     )
+    # plotter.add_data_distribution(train_dfs, val_dfs, test_dfs)
     logger.info(f"Number of classes: {num_classes}")
 
     # Initialize the TextAutoML instance with the best parameters
@@ -133,6 +139,7 @@ def main_loop(
         lstm_hidden_dim=lstm_hidden_dim,
         fraction_layers_to_finetune=fraction_layers_to_finetune,
         model_name=model_name,
+        plotter=plotter
     )
 
     # Fit the AutoML model on the training and validation datasets
@@ -182,16 +189,14 @@ def main_loop(
 
     return val_err
 
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+def parse_arguments(parser):
 
     parser.add_argument(
         "--dataset",
         type=str,
         required=True,
         help="The name of the dataset to run on.",
-        choices=["ag_news", "imdb", "amazon", "dbpedia",]
+        choices=["ag_news", "imdb", "amazon", "dbpedia", "yelp"]
     )
     parser.add_argument(
         "--output-path",
@@ -307,7 +312,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--model-name",
-        default="distilroberta-base",
+        default="distilbert-base-cased",
         type=str,
         help="The name of the model to use for the transformer approach."
     )
@@ -326,28 +331,35 @@ if __name__ == "__main__":
     args.output_path = Path(args.output_path).absolute()
     args.output_path.mkdir(parents=True, exist_ok=True)
 
-    logging.basicConfig(level=logging.INFO, filename=args.output_path / "run.log", 
+
+if __name__ == "__main__":
+    overrides = sys.argv[1:]
+    with initialize(config_path="./configs", version_base="1.3"):
+        cfg = compose(config_name="train", overrides=overrides)
+    args = OmegaConf.to_object(cfg)
+    out_dir = Path(args["output_path"])
+    out_dir.mkdir(parents=True, exist_ok=True) 
+    logging.basicConfig(level=logging.INFO, filename=out_dir / "run.log", 
                         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
                         datefmt="%Y-%m-%d %H:%M:%S")
 
     main_loop(
-        dataset=args.dataset,
-        output_path=Path(args.output_path).absolute(),
-        data_path=Path(args.data_path).absolute(),
-        seed=args.seed,
-        approach=args.approach,
-        vocab_size=args.vocab_size,
-        token_length=args.token_length,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        ffnn_hidden=args.ffnn_hidden_layer_dim,
-        lstm_emb_dim=args.lstm_emb_dim,
-        lstm_hidden_dim=args.lstm_hidden_dim,
-        data_fraction=args.data_fraction,
-        load_path=Path(args.load_path) if args.load_path is not None else None,
-        is_mtl=args.is_mtl,
-        model_name=args.model_name
+        dataset=args["dataset"],
+        output_path=out_dir.absolute(),
+        data_path=Path(args["data_path"]).absolute(),
+        seed=args["seed"],
+        approach=args["approach"],
+        vocab_size=args["model_config"]["vocab_size"],
+        token_length=args["token_length"],
+        epochs=args["epochs"],
+        batch_size=args["batch_size"],
+        lr=args["lr"],
+        weight_decay=args["weight_decay"],
+        ffnn_hidden=args["ffnn_hidden_layer_dim"],
+        lstm_emb_dim=args["model_config"]["lstm_emb_dim"],
+        lstm_hidden_dim=args["model_config"]["lstm_hidden_dim"],
+        data_fraction=args["data_fraction"],
+        load_path=Path(args["load_path"]) if args["load_path"] else None,
+        is_mtl=args["is_mtl"],
+        model_name=args["model_name"],
     )
-# end of file

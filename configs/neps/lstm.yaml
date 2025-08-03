@@ -1,0 +1,19 @@
+pipeline_space:
+  lr:
+    lower: 0.000001
+    upper: 0.001
+    log: True
+
+  # epochs:
+  #   lower: 10
+  #   upper: 100
+  #   is_fidelity: True
+
+  data_fraction:
+    lower: 0.1
+    upper: 1.0
+    is_fidelity: True
+
+optimizer: "successive_halving"
+max_evaluations_total: 100
+root_directory: neps_results_df/

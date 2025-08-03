@@ -15,6 +15,13 @@ from automl.normalization import remove_markdowns
 from itertools import chain
 import random
 
+from muon import SingleDeviceMuonWithAuxAdam
+import time
+
+from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import label_binarize
+
+
 try:
     from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
     TRANSFORMERS_AVAILABLE = True
@@ -34,11 +41,12 @@ class TextAutoML:
         batch_size=64,
         lr=1e-4,
         weight_decay=0.0,
-        model_name="distilroberta-base",
+        model_name="distilbert-base-cased",
         ffnn_hidden=128,
         lstm_emb_dim=128,
         lstm_hidden_dim=128,
         fraction_layers_to_finetune: float=1.0,
+        plotter=None
     ):
         self.seed = seed
         np.random.seed(seed)
@@ -53,11 +61,14 @@ class TextAutoML:
         self.batch_size = batch_size
         self.lr = lr
         self.weight_decay = weight_decay
+        self.scheduler = None
 
         self.ffnn_hidden = ffnn_hidden
         self.lstm_emb_dim = lstm_emb_dim
         self.lstm_hidden_dim = lstm_hidden_dim
         self.fraction_layers_to_finetune = fraction_layers_to_finetune
+        
+        self.plotter = plotter
 
         self.model = None
         self.tokenizer = None
@@ -135,7 +146,7 @@ class TextAutoML:
             if self.approach == 'transformer':
                 self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             else:
-                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
 
             self.vocab_size = self.tokenizer.vocab_size
             datasets = {
@@ -145,7 +156,7 @@ class TextAutoML:
             }
             train_loaders = {
                 task:
-                DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+                DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
                 for task, dataset in datasets.items()
             }
             _datasets = {
@@ -154,7 +165,7 @@ class TextAutoML:
                 ) for task in self.val_texts.keys()
             }
             val_loaders = {
-                task: DataLoader(_dataset, batch_size=self.batch_size, shuffle=True)
+                task: DataLoader(_dataset, batch_size=self.batch_size, shuffle=False)
                     for task, _dataset in _datasets.items()
             }
 
@@ -225,13 +236,33 @@ class TextAutoML:
             num_training_steps = sum(len(loader) for loader in train_loaders.values()) * self.epochs
             num_warmup_steps = int(num_training_steps * 0.1) 
 
-            scheduler = get_linear_schedule_with_warmup(
+            self.scheduler = get_linear_schedule_with_warmup(
                 optimizer,
                 num_warmup_steps=num_warmup_steps,
                 num_training_steps=num_training_steps
             )
         else:
-            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+            hidden = [p for p in self.model.parameters() if p.ndim >= 2]
+            others = [p for p in self.model.parameters() if p.ndim < 2]
+            optimizer = SingleDeviceMuonWithAuxAdam(
+                [
+                    dict(
+                        params=hidden,
+                        use_muon=True,
+                        lr=self.lr,
+                        weight_decay=self.weight_decay,
+                        momentum=0.95,
+                    ),
+                    dict(
+                        params=others,
+                        use_muon=False,
+                        lr=self.lr,
+                        betas=[0.9, 0.999],
+                        eps=1e-06,
+                        weight_decay=self.weight_decay,
+                    ),
+                ]
+            )
         criterion = nn.CrossEntropyLoss()
 
         start_epoch = 0
@@ -242,10 +273,10 @@ class TextAutoML:
             optimizer.load_state_dict(_states["optimizer_state_dict"])
             start_epoch = _states["epoch"]
             logger.info(f"Resuming from checkpoint at {start_epoch}")
-
-        for epoch in range(start_epoch, self.epochs):            
+        for epoch in range(start_epoch, self.epochs):
             train_iters = {task: iter(loader) for task, loader in train_loaders.items()}
             total_loss = 0
+            steps_in_accumulation = 0
             while len(train_iters.keys()) > 0:
                 task = random.choice(list(train_iters))
                 try:
@@ -286,18 +317,42 @@ class TextAutoML:
                 loss.backward()
                 optimizer.step()
 
-                if scheduler:
-                    scheduler.step()
-                    
+                if self.scheduler:
+                    self.scheduler.step()
+
                 total_loss += loss.item()
+                steps_in_accumulation += 1
 
             logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
-            
             if self.val_texts:
+                total_val_accuracys = 0.0
+                total_val_auc = 0.0
                 for task in train_loaders.keys():
-                    val_preds, val_labels = self._predict(val_loaders[task], task)
+                    (val_preds, val_labels), val_prob = self._predict(val_loaders[task], task)
                     val_acc = accuracy_score(val_labels, val_preds)
                     logger.info(f"Epoch {epoch + 1}, Validation Accuracy for dataset {task} is: {val_acc:.4f}")
+                    n_classes = self.num_classes[task]
+                    y_true_binarized = label_binarize(val_labels, classes=np.arange(n_classes))
+                    
+                    if n_classes == 2:
+                        auc =  roc_auc_score(val_labels, val_prob[:, 1])
+                    else:
+                    # Multiclass classification - use one-vs-rest approach
+                        auc = custom_multiclass_roc_auc(y_true_binarized, val_prob)
+                    self.plotter.log_evaluation(
+                        epoch=epoch + 1, task=task, val_accuracy=val_acc, 
+                        val_auc=auc,
+                    )
+                    total_val_accuracys += val_acc
+                    total_val_auc += auc
+                mean_val_accuracy = total_val_accuracys / len(train_loaders)
+                mean_val_auc = total_val_auc / len(train_loaders)
+                self.plotter.epoch_info(
+                    mean_val_accuracy=mean_val_accuracy, 
+                    mean_val_auc=mean_val_auc, 
+                    epoch=epoch+1,
+                    mean_train_loss=total_loss / steps_in_accumulation,
+                    )
 
         if save_path is not None:
             save_path = Path(save_path) if not isinstance(save_path, Path) else save_path
@@ -312,11 +367,12 @@ class TextAutoML:
                 save_path / "checkpoint.pth"
             )   
         torch.cuda.empty_cache()
-        return val_acc or 0.0
+        return mean_val_accuracy or 0.0
 
     def _predict(self, val_loader: DataLoader, task):
         self.model.eval()
         preds = []
+        all_probs = []
         labels = []
         with torch.no_grad():
             for batch in val_loader:
@@ -326,7 +382,7 @@ class TextAutoML:
                     labels.extend(batch["labels"])
                 else:
                     match self.approach:
-                        case "lstm" "transformer":
+                        case "lstm":
                             inputs = {k: v.to(self.device) for k, v in batch.items()}
                             outputs = self.model(**inputs, task=task)
                             labels.extend(inputs["labels"])
@@ -341,14 +397,17 @@ class TextAutoML:
                         case _:
                             raise ValueError("Oops! Wrong approach.")
                             
-                preds.extend(torch.argmax(outputs, dim=1).cpu().numpy())
+                probs = torch.softmax(outputs, dim=1)
+                pred = torch.argmax(probs, dim=1)
+                preds.extend(pred.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
         
         if isinstance(preds, list):
             preds = [p.item() for p in preds]
             labels = [l.item() for l in labels]
-            return np.array(preds), np.array(labels)
+            return (np.array(preds), np.array(labels)), np.array(all_probs)
         else:
-            return preds.cpu().numpy(), labels.cpu().numpy()
+            return (preds.cpu().numpy(), labels.cpu().numpy()), all_probs.cpu().numpy()
 
 
     def predict(self, test_data: pd.DataFrame | DataLoader, task) -> Tuple[np.ndarray, np.ndarray]:
@@ -357,7 +416,7 @@ class TextAutoML:
             f"Input data type: {type(test_data)}; Expected: pd.DataFrame | DataLoader"
 
         if isinstance(test_data, DataLoader):
-            return self._predict(test_data, task)
+            return self._predict(test_data, task)[0]
         
         if self.approach in ['lstm', 'transformer']:
             _dataset = SimpleTextDataset(
@@ -371,4 +430,31 @@ class TextAutoML:
             raise ValueError(f"Unrecognized approach: {self.approach}")
             # handling any possible tokenization
         
-        return self._predict(_loader, task)
+        return self._predict(_loader, task)[0]
+
+
+def custom_multiclass_roc_auc(y_true_binarized: np.ndarray, y_prob: np.ndarray) -> float:
+    """Compute macro-averaged ROC AUC score (one-vs-rest) from scratch."""
+    def binary_auc(y_true, y_score):
+        # Sort scores and corresponding true labels
+        desc_score_indices = np.argsort(-y_score)
+        y_true_sorted = y_true[desc_score_indices]
+        y_score_sorted = y_score[desc_score_indices]
+
+        tps = np.cumsum(y_true_sorted)
+        fps = np.cumsum(1 - y_true_sorted)
+
+        tpr = tps / tps[-1] if tps[-1] > 0 else np.zeros_like(tps)
+        fpr = fps / fps[-1] if fps[-1] > 0 else np.zeros_like(fps)
+
+        # Trapezoidal integration
+        return np.trapz(tpr, fpr)
+
+    n_classes = y_true_binarized.shape[1]
+    aucs = []
+    for i in range(n_classes):
+        if np.sum(y_true_binarized[:, i]) == 0:
+            continue  # Skip if this class doesn't appear
+        auc_i = binary_auc(y_true_binarized[:, i], y_prob[:, i])
+        aucs.append(auc_i)
+    return np.mean(aucs) if aucs else float("nan")

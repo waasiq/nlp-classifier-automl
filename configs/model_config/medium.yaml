@@ -1,0 +1,3 @@
+vocab_size: 20000
+lstm_emb_dim: 128
+lstm_hidden_dim: 128

@@ -23,7 +23,9 @@ pyarrow = ">=12.0"       # Arrow format support
 neural-pipeline-search = "0.13.0"
 datasets = ">=2.0"
 transformers =  ">=4.20"
+muon-optimizer = { git = "https://github.com/KellerJordan/Muon" }
 wandb = ">=0.21.0"
+hydra-core = ">=1.3.2"
 
 
 [build-system]

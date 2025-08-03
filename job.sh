@@ -38,7 +38,7 @@ cd /work/dlclarge2/masoodw-spino100/auto-ml/automl-nlp
 
 export PYTHONPATH=/work/dlclarge2/masoodw-spino100/miniconda3/envs/automl/bin/python
 
-python run.py --data-path data --dataset amazon --epochs 3 --data-fraction 0.001 --approach transformer --output-path outputs/mtl-transformer --is-mtl
+python run.py --dataset amazon --epochs 3 --data-fraction 0.001 --approach transformer --output-path outputs/mtl-transformer --is-mtl
 end=`date +%s`
 runtime=$((end-start))
 
