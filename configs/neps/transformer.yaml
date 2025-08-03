@@ -11,6 +11,6 @@ pipeline_space:
     upper: 1.0
     is_fidelity: True
 
-optimizer: "asha"
+optimizer: "hyperband"
 max_evaluations_total: 50
 root_directory: neps_results/
