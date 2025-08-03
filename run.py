@@ -15,14 +15,17 @@ python run.py \
 """
 from __future__ import annotations
 import sys
-import argparse
+import math
 import logging
 import numpy as np
 from pathlib import Path
 from sklearn.metrics import accuracy_score, classification_report
 import yaml
+import pandas as pd
 from wandb_log import get_logger
-from automl.core import TextAutoML
+from automl.core import TextAutoML, custom_multiclass_roc_auc
+from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import label_binarize
 from automl.datasets import (
     AGNewsDataset,
     AmazonReviewsDataset,
@@ -87,26 +90,47 @@ def main_loop(
         }
         dataset = "mtl"
 
-    run_name = f"{dataset}_seed={seed}_approach={approach}_lr={lr}"
-    plotter = get_logger(log_dir=Path(output_path) / run_name, run_name=run_name)
-
-    logger.info("Fitting Text AutoML")
-
-    # You do not need to follow this setup or API it's merely here to provide
-    # an example of how your AutoML system could be used.
-    # As a general rule of thumb, you should **never** pass in any
-    # test data to your AutoML solution other than to generate predictions.
-
-    # Get the dataset and create dataloaders
+    
     data_path = Path(data_path) if isinstance(data_path, str) else data_path
     data_infos = {dataset: dataset_class(data_path).create_dataloaders(val_size=val_size, random_state=seed) for dataset, dataset_class in dataset_classes.items()}
     train_dfs = {dataset: data_info['train_df'] for dataset, data_info in data_infos.items()}
-    
-    sum_dp = sum(len(v) for v in train_dfs.values())
-    n_class_samples = round(sum_dp * data_fraction / len(train_dfs))
+    val_dfs = {dataset: data_info.get('val_df', None) for dataset, data_info in data_infos.items()}
+    test_dfs = {dataset: data_info['test_df'] for dataset, data_info in data_infos.items()}
+    num_classes = {dataset: data_info['num_classes'] for dataset, data_info in data_infos.items()}
+    return dataset_classes, train_dfs, val_dfs, test_dfs, num_classes
+
+def main_loop(
+        train_dfs: dict[str, pd.DataFrame],
+        val_dfs: dict[str, pd.DataFrame],
+        test_dfs: dict[str, pd.DataFrame],
+        num_classes: dict[str, int],
+        dataset_classes: dict[str, str],
+        data_fraction: float,
+        output_path: Path,
+        seed: int,
+        approach: str,
+        vocab_size: int = 10000,
+        token_length: int = 128,
+        epochs: int = 5,
+        batch_size: int = 32,
+        lr: float = 0.0001,
+        weight_decay: float = 0.01,
+        ffnn_hidden: int = 128,
+        lstm_emb_dim: int = 128,
+        lstm_hidden_dim: int = 128,
+        fraction_layers_to_finetune: float = 1.0,
+        load_path: Path = None,
+        pipeline_directory: Path | None = None,
+    ) -> None:
+    #create run_name with random 6 characters
+    run_name = f"{''.join(dataset_classes.keys())}_config_{pipeline_directory}_{np.random.randint(100000, 999999)}"
+    plotter = get_logger(log_dir=pipeline_directory, run_name=run_name)
+
+    logger.info("Fitting Text AutoML")
 
     np.random.seed(seed)
 
+    n_class_samples = round(sum(len(v) for v in train_dfs.values()) * data_fraction / len(train_dfs))
     for dataset, train_df in train_dfs.items():
         _subsample = np.random.choice(
             list(range(len(train_df))),
@@ -114,10 +138,7 @@ def main_loop(
             replace=len(train_df) < n_class_samples,
         )
         train_dfs[dataset] = train_df.iloc[_subsample]
-    
-    val_dfs = {dataset: data_info.get('val_df', None) for dataset, data_info in data_infos.items()}
-    test_dfs = {dataset: data_info['test_df'] for dataset, data_info in data_infos.items()}
-    num_classes = {dataset: data_info['num_classes'] for dataset, data_info in data_infos.items()}
+
     logger.info(
         [f"Train size: {len(train_dfs[dataset])}, Validation size: {len(val_dfs[dataset])}, Test size: {len(test_dfs[dataset])}" for dataset in dataset_classes.keys()]
     )
@@ -143,7 +164,7 @@ def main_loop(
     )
 
     # Fit the AutoML model on the training and validation datasets
-    val_err = automl.fit(
+    user_result = automl.fit(
         train_dfs,
         val_dfs,
         num_classes=num_classes,
@@ -153,21 +174,42 @@ def main_loop(
     logger.info("Training complete")
 
     # Predict on the test set
+    val_err = user_result.get("objective_to_minimize", math.inf)
+    test_roc_auc_accumulated = 0.0
+    test_n = 0
     for task, test_df in test_dfs.items():
-        test_preds, test_labels = automl.predict(test_df, task)
-
+        if task == FINAL_TEST_DATASET:
+            continue
+        (test_preds, test_labels), test_probs = automl.predict(test_df, task)
+        n_classes = num_classes[task]
+        y_true_binarized = label_binarize(test_labels, classes=np.arange(n_classes))
+        
+        if n_classes == 2:
+            auc =  roc_auc_score(test_labels, test_probs[:, 1])
+        else:
+        # Multiclass classification - use one-vs-rest approach
+            auc = custom_multiclass_roc_auc(y_true_binarized, test_probs)
+        test_roc_auc_accumulated += auc
+        test_n += 1
+        user_result["info_dict"][f"{task}_roc_auc_score"] = float(auc)
+        output_path = Path(output_path)
         # Write the predictions of X_test to disk
         logger.info("Writing predictions to disk")
-        with (output_path / "score.yaml").open("w") as f:
+        task_output_path = output_path / task
+        task_output_path.mkdir(parents=True, exist_ok=True)
+        with (task_output_path / "score.yaml").open("w") as f:
             yaml.safe_dump({"val_err": float(val_err)}, f)
-        logger.info(f"Saved validataion score at {output_path / 'score.yaml'}")
-        with (output_path / "test_preds.npy").open("wb") as f:
+        logger.info(f"Saved validataion score at {task_output_path / 'score.yaml'}")
+        with (task_output_path / "test_preds.npy").open("wb") as f:
             np.save(f, test_preds)
-        logger.info(f"Saved tet prediction at {output_path / 'test_preds.npy'}")
+        logger.info(f"Saved tet prediction at {task_output_path / 'test_preds.npy'}")
 
+    # Average the ROC AUC scores across all tasks
+    average_roc_auc = test_roc_auc_accumulated / test_n
+    user_result["info_dict"]["test_mean_roc_auc"] = float(average_roc_auc)
     # In case of running on the final exam data, also add the predictions.npy
     # to the correct location for auto evaluation.
-    if dataset == FINAL_TEST_DATASET: 
+    if FINAL_TEST_DATASET in dataset_classes.keys(): 
         test_output_path = output_path / "predictions.npy"
         test_output_path.parent.mkdir(parents=True, exist_ok=True)
         with test_output_path.open("wb") as f:
@@ -185,152 +227,9 @@ def main_loop(
         logger.info(f"\n{classification_report(test_labels, test_preds)}")
     else:
         # This is the setting for the exam dataset, you will not have access to the labels
-        logger.info(f"No test labels available for dataset '{dataset}'")
-
-    return val_err
-
-def parse_arguments(parser):
-
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        required=True,
-        help="The name of the dataset to run on.",
-        choices=["ag_news", "imdb", "amazon", "dbpedia", "yelp"]
-    )
-    parser.add_argument(
-        "--output-path",
-        type=Path,
-        default=None,
-        help=(
-            "The path to save the predictions to."
-            " By default this will just save to the cwd as `./results`."
-        )
-    )
-    parser.add_argument(
-        "--load-path",
-        type=Path,
-        default=None,
-        help="The path to resume checkpoint from."
-    )
-    parser.add_argument(
-        "--data-path",
-        type=Path,
-        default=None,
-        help=(
-            "The path to laod the data from."
-            " By default this will look up cwd for `./.data/`."
-        )
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help=(
-            "Random seed for reproducibility if you are using any randomness,"
-            " i.e. torch, numpy, pandas, sklearn, etc."
-        )
-    )
-    parser.add_argument(
-        "--approach",
-        type=str,
-        default="transformer",
-        choices=["lstm", "transformer"],
-        help=(
-            "The approach to use for the AutoML system. "
-            "Options are 'lstm', or 'transformer'."
-        )
-    )
-    parser.add_argument(
-        "--vocab-size",
-        type=int,
-        default=1000,
-        help="The size of the vocabulary to use for the text dataset."
-    )
-    parser.add_argument(
-        "--token-length",
-        type=int,
-        default=128,
-        help="The maximum length of tokens to use for the text dataset."
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=5,
-        help="The number of epochs to train the model for."
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=32,
-        help="The batch size to use for training and evaluation."
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=0.01,
-        help="The learning rate to use for the optimizer."
-    )
-    parser.add_argument(
-        "--weight-decay",
-        type=float,
-        default=0.01,
-        help="The weight decay to use for the optimizer."
-    )
-
-    parser.add_argument(
-        "--lstm-emb-dim",
-        type=int,
-        default=64,
-        help="The embedding dimension to use for the LSTM model."
-    )
-
-    parser.add_argument(
-        "--lstm-hidden-dim",
-        type=int,
-        default=64,
-        help="The hidden size to use for the LSTM model."
-    )
-
-    parser.add_argument(
-        "--ffnn-hidden-layer-dim",
-        type=int,
-        default=64,
-        help="The hidden size to use for the model."
-    )
-
-    parser.add_argument(
-        "--data-fraction",
-        type=float,
-        default=1,
-        help="Subsampling of training set, in fraction (0, 1]."
-    )
-    parser.add_argument(
-        "--is-mtl",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--model-name",
-        default="distilbert-base-cased",
-        type=str,
-        help="The name of the model to use for the transformer approach."
-    )
-    args = parser.parse_args()
-
-    if args.output_path is None:
-        args.output_path =  (
-            Path.cwd().absolute() / 
-            "results" / 
-            f"dataset={args.dataset}" / 
-            f"seed={args.seed}"
-        )
-    if args.data_path is None:
-        args.data_path = Path.cwd().absolute() / ".data"
-
-    args.output_path = Path(args.output_path).absolute()
-    args.output_path.mkdir(parents=True, exist_ok=True)
-
+        logger.info(f"No test labels available for dataset '{dataset_classes.keys()}'")
+    plotter.close()
+    return user_result
 
 if __name__ == "__main__":
     overrides = sys.argv[1:]
@@ -342,11 +241,22 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, filename=out_dir / "run.log", 
                         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
                         datefmt="%Y-%m-%d %H:%M:%S")
-
-    main_loop(
+    # load datasets:
+    dataset_classes, train_dfs, val_dfs, test_dfs, num_classes = load_dataset(
         dataset=args["dataset"],
-        output_path=out_dir.absolute(),
         data_path=Path(args["data_path"]).absolute(),
+        seed=args["seed"],
+        val_size= args["val_size"],
+        is_mtl=args["is_mtl"]
+    )
+    main_loop(
+        train_dfs=train_dfs,
+        val_dfs=val_dfs,
+        test_dfs=test_dfs,
+        num_classes=num_classes,
+        dataset_classes=dataset_classes,
+        data_fraction=args["data_fraction"],
+        output_path=out_dir.absolute(),
         seed=args["seed"],
         approach=args["approach"],
         vocab_size=args["model_config"]["vocab_size"],
@@ -358,8 +268,6 @@ if __name__ == "__main__":
         ffnn_hidden=args["ffnn_hidden_layer_dim"],
         lstm_emb_dim=args["model_config"]["lstm_emb_dim"],
         lstm_hidden_dim=args["model_config"]["lstm_hidden_dim"],
-        data_fraction=args["data_fraction"],
         load_path=Path(args["load_path"]) if args["load_path"] else None,
-        is_mtl=args["is_mtl"],
         model_name=args["model_name"],
     )

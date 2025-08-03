@@ -32,19 +32,24 @@ from automl.datasets import (
     IMDBDataset,
     YelpDataset,
 )
-from run import main_loop, parse_arguments
+from run import main_loop, load_dataset
 from hydra import compose, initialize
 from omegaconf import OmegaConf
 
 logger = logging.getLogger(__name__)
 
 
-def neps_training_wrapper(args):
-    def evaluate_pipeline(lr, data_fraction):
+def neps_training_wrapper(args, dataset_classes, train_dfs, val_dfs, test_dfs, num_classes):
+    def evaluate_pipeline(pipeline_directory, lr, data_fraction):
         return main_loop(
-            dataset=args["dataset"],
-            output_path=Path(args["output_path"]).absolute(),
-            data_path=Path(args["data_path"]).absolute(),
+            train_dfs=train_dfs,
+            val_dfs=val_dfs,
+            test_dfs=test_dfs,
+            num_classes=num_classes,
+            dataset_classes=dataset_classes,
+            pipeline_directory=pipeline_directory,
+            data_fraction=data_fraction,
+            output_path=out_dir.absolute(),
             seed=args["seed"],
             approach=args["approach"],
             vocab_size=args["model_config"]["vocab_size"],
@@ -56,9 +61,7 @@ def neps_training_wrapper(args):
             ffnn_hidden=args["ffnn_hidden_layer_dim"],
             lstm_emb_dim=args["model_config"]["lstm_emb_dim"],
             lstm_hidden_dim=args["model_config"]["lstm_hidden_dim"],
-            data_fraction=data_fraction,
             load_path=Path(args["load_path"]) if args["load_path"] else None,
-            is_mtl=args["is_mtl"]
         )
     return evaluate_pipeline
 
@@ -74,8 +77,6 @@ def get_args():
     return cfg
 
 if __name__ == "__main__":
-    # parser = argparse.ArgumentParser()
-    # args = parse_arguments(parser)
     conf = get_args()
     out_dir = Path(conf["output_path"])
     out_dir.mkdir(parents=True, exist_ok=True) 
@@ -83,7 +84,16 @@ if __name__ == "__main__":
                         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
                         datefmt="%Y-%m-%d %H:%M:%S")
     nep_configs = conf.pop("neps")
+
+    dataset_classes, train_dfs, val_dfs, test_dfs, num_classes = load_dataset(
+        dataset=conf["dataset"],
+        data_path=Path(conf["data_path"]).absolute(),
+        seed=conf["seed"],
+        val_size= conf["val_size"],
+        is_mtl=conf["is_mtl"]
+    )
+
     neps.run(
-        evaluate_pipeline= neps_training_wrapper(conf),
+        evaluate_pipeline= neps_training_wrapper(conf, dataset_classes, train_dfs, val_dfs, test_dfs, num_classes),
         **nep_configs
     )

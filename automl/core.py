@@ -207,14 +207,13 @@ class TextAutoML:
         self.model.to(self.device)
         # assert dataset is not None, f"`dataset` cannot be None here!"
         # loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-        val_acc = self._train_loop(
+        return self._train_loop(
             train_loaders,
             val_loaders,
             load_path=load_path,
             save_path=save_path,
         )
 
-        return 1 - val_acc
 
     def _train_loop(
         self, 
@@ -273,7 +272,7 @@ class TextAutoML:
             optimizer.load_state_dict(_states["optimizer_state_dict"])
             start_epoch = _states["epoch"]
             logger.info(f"Resuming from checkpoint at {start_epoch}")
-        for epoch in range(start_epoch, self.epochs):
+        for i, epoch in enumerate(range(start_epoch, self.epochs)):
             train_iters = {task: iter(loader) for task, loader in train_loaders.items()}
             total_loss = 0
             steps_in_accumulation = 0
@@ -322,7 +321,6 @@ class TextAutoML:
 
                 total_loss += loss.item()
                 steps_in_accumulation += 1
-
             logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
             if self.val_texts:
                 total_val_accuracys = 0.0
@@ -340,18 +338,26 @@ class TextAutoML:
                     # Multiclass classification - use one-vs-rest approach
                         auc = custom_multiclass_roc_auc(y_true_binarized, val_prob)
                     self.plotter.log_evaluation(
-                        epoch=epoch + 1, task=task, val_accuracy=val_acc, 
+                        epoch=epoch, task=task, val_accuracy=val_acc, 
                         val_auc=auc,
                     )
                     total_val_accuracys += val_acc
                     total_val_auc += auc
                 mean_val_accuracy = total_val_accuracys / len(train_loaders)
                 mean_val_auc = total_val_auc / len(train_loaders)
+                if mean_val_accuracy > best_val_accuracy:
+                    best_val_accuracy = mean_val_accuracy
+                    early_stop_patience = 2
+                else:
+                    early_stop_patience -= 1
+                    if early_stop_patience <= 0:
+                        logger.info(f"Early stopping at epoch {epoch + 1}. Best validation accuracy: {best_val_accuracy:.4f}")
+                        break
                 self.plotter.epoch_info(
                     mean_val_accuracy=mean_val_accuracy, 
                     mean_val_auc=mean_val_auc, 
-                    epoch=epoch+1,
-                    mean_train_loss=total_loss / steps_in_accumulation,
+                    epoch=epoch,
+                    mean_train_loss=total_loss / steps_in_accumulation if steps_in_accumulation > 0 else float("nan"),
                     )
 
         if save_path is not None:
@@ -367,7 +373,14 @@ class TextAutoML:
                 save_path / "checkpoint.pth"
             )   
         torch.cuda.empty_cache()
-        return mean_val_accuracy or 0.0
+        return {
+            "objective_to_minimize": 1 - mean_val_accuracy if mean_val_accuracy else 0.0, 
+            "info_dict": {
+                "mean_val_auc": float(mean_val_auc) or 0.0, 
+                "epochs": i, 
+                "train_loss": total_loss / steps_in_accumulation if steps_in_accumulation > 0 else float("nan"),
+                }
+            }
 
     def _predict(self, val_loader: DataLoader, task):
         self.model.eval()
@@ -430,7 +443,7 @@ class TextAutoML:
             raise ValueError(f"Unrecognized approach: {self.approach}")
             # handling any possible tokenization
         
-        return self._predict(_loader, task)[0]
+        return self._predict(_loader, task)
 
 
 def custom_multiclass_roc_auc(y_true_binarized: np.ndarray, y_prob: np.ndarray) -> float:
