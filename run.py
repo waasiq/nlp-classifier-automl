@@ -49,10 +49,10 @@ def load_dataset(dataset: str, data_path: Path, val_size: float, seed: int, is_m
             dataset_class = IMDBDataset
         case "amazon":
             dataset_class = AmazonReviewsDataset
-        case "dbpedia":
-            dataset_class = DBpediaDataset
-        case "yelp":
-            dataset_class = YelpDataset
+        #case "dbpedia":
+        #    dataset_class = DBpediaDataset
+        #case "yelp":
+        #    dataset_class = YelpDataset
         case _:
             raise ValueError(f"Invalid dataset: {dataset}")
     
@@ -60,7 +60,7 @@ def load_dataset(dataset: str, data_path: Path, val_size: float, seed: int, is_m
 
     if is_mtl:
         dataset_classes = {
-            #"ag_news": AGNewsDataset,
+            "ag_news": AGNewsDataset,
             "imdb": IMDBDataset,
             "amazon": AmazonReviewsDataset,
             #"dbpedia": DBpediaDataset,
@@ -96,14 +96,18 @@ def main_loop(
         ffnn_hidden: int = 128,
         lstm_emb_dim: int = 128,
         lstm_hidden_dim: int = 128,
-        fraction_layers_to_finetune: float = 1.0,
         load_path: Path = None,
         pipeline_directory: Path | None = None,
         model_name: str = "distilbert-base-uncased",
+        bert_lr: float = 5e-5,
+        num_bert_layers_to_unfreeze: int = 2, 
     ) -> None:
     #create run_name with random 6 characters
     run_name = f"{''.join(dataset_classes.keys())}_config_{pipeline_directory}_{np.random.randint(100000, 999999)}"
-    plotter = get_logger(log_dir=pipeline_directory, run_name=run_name)
+    
+    # Handle case where pipeline_directory is None (when running directly, not through NEPS)
+    log_dir = pipeline_directory if pipeline_directory is not None else output_path / "logs"
+    plotter = get_logger(log_dir=log_dir, run_name=run_name)
 
     logger.info("Fitting Text AutoML")
 
@@ -137,9 +141,10 @@ def main_loop(
         ffnn_hidden=ffnn_hidden,
         lstm_emb_dim=lstm_emb_dim,
         lstm_hidden_dim=lstm_hidden_dim,
-        fraction_layers_to_finetune=fraction_layers_to_finetune,
         model_name=model_name,
-        plotter=plotter
+        plotter=plotter,
+        bert_lr=bert_lr,
+        num_bert_layers_to_unfreeze=num_bert_layers_to_unfreeze,
     )
 
     # Fit the AutoML model on the training and validation datasets
@@ -249,4 +254,6 @@ if __name__ == "__main__":
         lstm_hidden_dim=args["model_config"]["lstm_hidden_dim"],
         load_path=Path(args["load_path"]) if args["load_path"] else None,
         model_name=args["model_name"],
+        bert_lr=args["bert_lr"],
+        num_bert_layers_to_unfreeze=args["num_bert_layers_to_unfreeze"]
     )

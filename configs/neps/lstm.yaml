@@ -10,7 +10,7 @@ pipeline_space:
   #   is_fidelity: True
 
   data_fraction:
-    lower: 0.1
+    lower: 0.5
     upper: 1.0
     is_fidelity: True
 

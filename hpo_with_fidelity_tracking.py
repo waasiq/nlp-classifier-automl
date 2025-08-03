@@ -245,7 +245,15 @@ class FidelityCorrelationTracker:
 
 
 def neps_training_wrapper_with_tracking(args, tracker: FidelityCorrelationTracker, dataset_classes, train_dfs, val_dfs, test_dfs, num_classes, out_dir: Path):
-    def evaluate_pipeline(pipeline_directory, lr, data_fraction):
+    """Enhanced training wrapper that tracks fidelity correlations."""
+    def evaluate_pipeline(pipeline_directory, data_fraction, **kwargs):
+        # Extract parameters from kwargs or use defaults from config
+        lr = kwargs.get('lr', args["lr"])  # fallback to config lr
+        batch_size = kwargs.get('batch_size', args["batch_size"])
+        bert_lr = kwargs.get('bert_lr', args.get("bert_lr", 5e-5))
+        num_bert_layers_to_unfreeze = kwargs.get('num_bert_layers_to_unfreeze', 2)
+        
+        # Run the evaluation - main_loop returns val_err (float) despite -> None annotation
         loss = main_loop(
             train_dfs=train_dfs,
             val_dfs=val_dfs,
@@ -260,19 +268,25 @@ def neps_training_wrapper_with_tracking(args, tracker: FidelityCorrelationTracke
             vocab_size=args["model_config"]["vocab_size"],
             token_length=args["token_length"],
             epochs=args["epochs"],
-            batch_size=args["batch_size"],
+            batch_size=batch_size,
             lr=lr,
+            bert_lr=bert_lr,
             weight_decay=args["weight_decay"],
             ffnn_hidden=args["ffnn_hidden_layer_dim"],
             lstm_emb_dim=args["model_config"]["lstm_emb_dim"],
             lstm_hidden_dim=args["model_config"]["lstm_hidden_dim"],
+            num_bert_layers_to_unfreeze=num_bert_layers_to_unfreeze,
             load_path=Path(args["load_path"]) if args["load_path"] else None,
             model_name=args["model_name"],
         )
         
+        # Log the evaluation to the fidelity tracker
         config = {
             'lr': lr,
             'data_fraction': data_fraction,
+            'batch_size': batch_size,
+            'bert_lr': bert_lr,
+            'num_bert_layers_to_unfreeze': num_bert_layers_to_unfreeze,
             'pipeline_directory': str(pipeline_directory)
         }
         tracker.log_evaluation(config, loss)
@@ -319,7 +333,7 @@ if __name__ == "__main__":
         data_path=Path(conf["data_path"]).absolute(),
         seed=conf["seed"],
         val_size=conf["val_size"],
-        is_mtl=conf["is_mtl"]
+        is_mtl=conf["is_mtl"],
     )
     
     try:

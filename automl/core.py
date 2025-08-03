@@ -42,16 +42,18 @@ class TextAutoML:
         lr=1e-4,
         weight_decay=0.0,
         model_name="distilbert-base-cased",
+        bert_lr=5e-5,
         ffnn_hidden=128,
         lstm_emb_dim=128,
         lstm_hidden_dim=128,
-        fraction_layers_to_finetune: float=1.0,
+        num_bert_layers_to_unfreeze: int=2,
         plotter=None
     ):
         self.seed = seed
         np.random.seed(seed)
         torch.manual_seed(seed)
 
+        self.bert_lr = bert_lr
         self.model_name = model_name
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.approach = approach
@@ -66,7 +68,7 @@ class TextAutoML:
         self.ffnn_hidden = ffnn_hidden
         self.lstm_emb_dim = lstm_emb_dim
         self.lstm_hidden_dim = lstm_hidden_dim
-        self.fraction_layers_to_finetune = fraction_layers_to_finetune
+        self.num_bert_layers_to_unfreeze = num_bert_layers_to_unfreeze
         
         self.plotter = plotter
 
@@ -94,7 +96,7 @@ class TextAutoML:
         ffnn_hidden=None,
         lstm_emb_dim=None,
         lstm_hidden_dim=None,
-        fraction_layers_to_finetune=None,
+        num_bert_layers_to_unfreeze=None,
         load_path: Path=None,
         save_path: Path=None,
     ):
@@ -127,7 +129,7 @@ class TextAutoML:
         if ffnn_hidden is not None: self.ffnn_hidden = ffnn_hidden
         if lstm_emb_dim is not None: self.lstm_emb_dim = lstm_emb_dim
         if lstm_hidden_dim is not None: self.lstm_hidden_dim = lstm_hidden_dim
-        if fraction_layers_to_finetune is not None: self.fraction_layers_to_finetune = fraction_layers_to_finetune
+        if num_bert_layers_to_unfreeze is not None: self.num_bert_layers_to_unfreeze = num_bert_layers_to_unfreeze
         
         logger.info("Loading and preparing data...")
 
@@ -179,20 +181,15 @@ class TextAutoML:
                     )
                 case "transformer":
                     if TRANSFORMERS_AVAILABLE:
-                        task_num_classes = {
-                                "dbpedia": 14,
-                                "ag_news": 4,
-                                "amazon": 5,
-                                "imdb": 2,
-                                "yelp": 5
-                        }
+                        # Use actual num_classes from the datasets being used
+                        task_num_classes = self.num_classes
 
                         backbone = AutoModel.from_pretrained(self.model_name)
 
                         self.model = TransformerMultiTaskClassifier(
                             backbone=backbone,
                             task_num_classes=task_num_classes,
-                            num_bert_layers_to_unfreeze=2 
+                            num_bert_layers_to_unfreeze=self.num_bert_layers_to_unfreeze 
                         )
                     else:
                         raise ValueError(
@@ -222,7 +219,7 @@ class TextAutoML:
         load_path: Path=None,
         save_path: Path=None,
     ):    
-        early_stop_patience = 2
+        #early_stop_patience = 2
         best_val_accuracy = 0
     
         if self.approach == "transformer":
@@ -231,8 +228,8 @@ class TextAutoML:
                             self.model.classification_heads.parameters()
                         )
             optimizer_grouped_parameters = [
-                {"params": self.model.backbone.parameters(), "lr": 5e-5}, # BERT backbone LR
-                {"params": head_params, "lr": 2e-5}                       # Custom head LR
+                {"params": self.model.backbone.parameters(), "lr": self.bert_lr}, # BERT backbone LR
+                {"params": head_params, "lr": self.lr}                            # Custom head LR
             ]  
  
             optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=self.weight_decay)
@@ -351,18 +348,18 @@ class TextAutoML:
                 mean_val_auc = total_val_auc / len(train_loaders)
                 if mean_val_accuracy > best_val_accuracy:
                     best_val_accuracy = mean_val_accuracy
-                    early_stop_patience = 2
-                else:
-                    early_stop_patience -= 1
-                    if early_stop_patience <= 0:
-                        logger.info(f"Early stopping at epoch {epoch + 1}. Best validation accuracy: {best_val_accuracy:.4f}")
-                        break
+                    #early_stop_patience = 2
+                # else:
+                    #early_stop_patience -= 1
+                    #if early_stop_patience <= 0:
+                    #    logger.info(f"Early stopping at epoch {epoch + 1}. Best validation accuracy: {best_val_accuracy:.4f}")
+                    #    break
                 self.plotter.epoch_info(
                     mean_val_accuracy=mean_val_accuracy, 
                     mean_val_auc=mean_val_auc, 
                     epoch=epoch,
                     mean_train_loss=total_loss / steps_in_accumulation if steps_in_accumulation > 0 else float("nan"),
-                    )
+                )
 
         if save_path is not None:
             save_path = Path(save_path) if not isinstance(save_path, Path) else save_path
