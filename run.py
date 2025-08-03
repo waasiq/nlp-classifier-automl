@@ -100,9 +100,9 @@ def main_loop(
         load_path: Path = None,
         pipeline_directory: Path | None = None,
     ) -> None:
- 
-    run_name = f"{''.join(dataset_classes.keys())}_config_{pipeline_directory}"
-    plotter = get_logger(log_dir=Path(output_path) / run_name, run_name=run_name)
+    #create run_name with random 6 characters
+    run_name = f"{''.join(dataset_classes.keys())}_config_{pipeline_directory}_{np.random.randint(100000, 999999)}"
+    plotter = get_logger(log_dir=pipeline_directory, run_name=run_name)
 
     logger.info("Fitting Text AutoML")
 
@@ -120,7 +120,7 @@ def main_loop(
     logger.info(
         [f"Train size: {len(train_dfs[dataset])}, Validation size: {len(val_dfs[dataset])}, Test size: {len(test_dfs[dataset])}" for dataset in dataset_classes.keys()]
     )
-    plotter.add_data_distribution(train_dfs, val_dfs, test_dfs)
+    # plotter.add_data_distribution(train_dfs, val_dfs, test_dfs)
     logger.info(f"Number of classes: {num_classes}")
 
     # Initialize the TextAutoML instance with the best parameters

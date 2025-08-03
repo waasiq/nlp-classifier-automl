@@ -94,13 +94,6 @@ class WandbLogger:
         """
         Marks the training run as finished and closes the wandb run.
         """
-        # Mark run as finished in run_info.yaml
-        with (self.training_directory / "run_info.yaml").open("r") as file:
-            run_info = yaml.safe_load(file)
-        run_info["finished"] = True
-        with (self.training_directory / "run_info.yaml").open("w") as file:
-            yaml.dump(run_info, file)
-
         wandb.finish()
 
 

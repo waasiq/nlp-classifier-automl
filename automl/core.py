@@ -324,7 +324,7 @@ class TextAutoML:
                     # Multiclass classification - use one-vs-rest approach
                         auc = custom_multiclass_roc_auc(y_true_binarized, val_prob)
                     self.plotter.log_evaluation(
-                        epoch=epoch + 1, task=task, val_accuracy=val_acc, 
+                        epoch=epoch, task=task, val_accuracy=val_acc, 
                         val_auc=auc,
                     )
                     total_val_accuracys += val_acc
@@ -342,7 +342,7 @@ class TextAutoML:
                 self.plotter.epoch_info(
                     mean_val_accuracy=mean_val_accuracy, 
                     mean_val_auc=mean_val_auc, 
-                    epoch=epoch+1,
+                    epoch=epoch,
                     mean_train_loss=total_loss / steps_in_accumulation if steps_in_accumulation > 0 else float("nan"),
                     )
 
