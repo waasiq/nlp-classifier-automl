@@ -343,7 +343,7 @@ class TextAutoML:
                     mean_val_accuracy=mean_val_accuracy, 
                     mean_val_auc=mean_val_auc, 
                     epoch=epoch+1,
-                    mean_train_loss=total_loss / steps_in_accumulation,
+                    mean_train_loss=total_loss / steps_in_accumulation if steps_in_accumulation > 0 else float("nan"),
                     )
 
         if save_path is not None:
@@ -364,7 +364,7 @@ class TextAutoML:
             "info_dict": {
                 "mean_val_auc": float(mean_val_auc) or 0.0, 
                 "epochs": i, 
-                "train_loss": total_loss / steps_in_accumulation
+                "train_loss": total_loss / steps_in_accumulation if steps_in_accumulation > 0 else float("nan"),
                 }
             }
 

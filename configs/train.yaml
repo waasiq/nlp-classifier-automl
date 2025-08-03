@@ -18,10 +18,10 @@ defaults:
 
 seed: 42
 dataset: yelp       # choices: [ag_news, imdb, amazon, dbpedia, yelp]
-output_path: ./results2/dataset=${dataset}/seed=${seed}      # if null ➜ "./results/dataset=${dataset}/seed=${seed}"
+output_path: ./results2/      # if null ➜ "./results/dataset=${dataset}/seed=${seed}"
 load_path: null        # resume checkpoint
 data_path: 'data'        # if null ➜ "./.data"
-
+val_size: 0.1
 
 # Training approach
 
@@ -29,9 +29,9 @@ approach: lstm  # choices: [tfidf, lstm, transformer]
 
 # Data & training hyper‑params
 
-vocab_size: 1000
+vocab_size: 20000
 token_length: 128
-epochs: 10
+epochs: 1
 batch_size: 2048
 lr: 0.001
 weight_decay: 0.0

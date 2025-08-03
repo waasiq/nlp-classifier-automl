@@ -1,7 +1,7 @@
 pipeline_space:
   lr:
     lower: 0.000001
-    upper: 0.001
+    upper: 0.01
     log: True
 
   # epochs:
@@ -10,10 +10,10 @@ pipeline_space:
   #   is_fidelity: True
 
   data_fraction:
-    lower: 0.01
+    lower: 0.1
     upper: 1.0
     is_fidelity: True
 
-optimizer: "successive_halving"
-max_evaluations_total: 100
+optimizer: "hyperband"
+max_evaluations_total: 50
 root_directory: neps_results/
