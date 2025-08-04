@@ -226,7 +226,7 @@ def neps_training_wrapper_with_tracking(args, tracker: FidelityCorrelationTracke
         num_bert_layers_to_unfreeze = kwargs.get('num_bert_layers_to_unfreeze', 2)
         
         # Run the evaluation - main_loop returns val_err (float) despite -> None annotation
-        loss = main_loop(
+        result_dict = main_loop(
             train_dfs=train_dfs,
             val_dfs=val_dfs,
             test_dfs=test_dfs,
@@ -261,9 +261,9 @@ def neps_training_wrapper_with_tracking(args, tracker: FidelityCorrelationTracke
             'num_bert_layers_to_unfreeze': num_bert_layers_to_unfreeze,
             'pipeline_directory': str(pipeline_directory)
         }
+        loss = result_dict['objective_to_minimize']
         tracker.log_evaluation(config, loss)
-        
-        return loss
+        return result_dict
     return evaluate_pipeline
 
 
