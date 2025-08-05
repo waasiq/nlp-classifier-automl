@@ -1,0 +1,2 @@
+config_name,objective_to_minimize,evaluation_duration,ag_news_roc_auc_score,amazon_roc_auc_score,epochs,imdb_roc_auc_score,mean_val_auc,test_mean_roc_auc,train_loss,batch_size,lr
+8,0.1713982059490463,3315.772048270999,0.9723319252077561,0.833396868371882,17,0.8638215135999999,0.8918419230228903,0.88985
