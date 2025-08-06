@@ -1,116 +1,244 @@
+# Correlation
+
+import pandas as pd
+import numpy as np
+import logging
 from pathlib import Path
-import yaml
-import copy
+import sys
+import subprocess
 from hydra import compose, initialize
 from omegaconf import OmegaConf
-from run import load_dataset
-import sys
-from hpo import neps_training_wrapper
-from scipy.stats import spearmanr
-import matplotlib.pyplot as plt
+from run import main_loop, load_dataset
+import yaml
 
-def extract_config_suffix(path: Path) -> int:
-    if path.name.startswith("config_"):
-        return path.name[7:]
-    return -1
+logger = logging.getLogger(__name__)
 
-class CorrelationEvaluation:
-    def __init__(self, result_dir: str):
-        self.current_confs = []
-        self.next_confs = []
-        self.get_configs(result_dir=result_dir)
-    
-    def get_configs(self, result_dir: str) -> list[dict]:
-        result_dir = Path(result_dir)
-        configs_path = result_dir / "configs"
-        if not configs_path.is_dir():
-            raise FileNotFoundError(f"Expected 'configs' inside {result_dir}")
-        result = {}
-        for cfg_dir in sorted(configs_path.glob("config_*"), key=extract_config_suffix):
-            config_id = extract_config_suffix(cfg_dir)
-            cfg_path = cfg_dir / "config.yaml"
-            report_path = cfg_dir / "report.yaml"
+ALL_DATASETS = ["ag_news", "imdb", "amazon", "dbpedia", "yelp"]
+DATA_FRACTION = 1.0
 
-            with cfg_path.open("r", encoding="utf-8") as fh:
-                config_data = yaml.safe_load(fh)
+def convert_numpy_types(obj):
+    """Convert numpy types to native Python types for YAML serialization."""
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
 
-            with report_path.open("r", encoding="utf-8") as fh:
-                report = yaml.safe_load(fh)
-                if report["reported_as"] != "success":
-                    print(f"skipping config {config_id}, beacause of not successful report")
-                    continue
-            result = {
-                "config_id": config_id,
-                "fidelity_id": '1',
-                "loss": report.get("objective_to_minimize"),
-                "test_roc_auc": report["extra"]["test_mean_roc_auc"],
-                "conf": config_data,
-            }
-            self.current_confs.append(result)
-        print(self.current_confs)
+def read_top5_configs(csv_path: str = "top5.csv"):
+    try:
+        df = pd.read_csv(csv_path)
+        logger.info(f"Successfully loaded {len(df)} configurations from {csv_path}")
         
-    def generate_lower_fidelity(self):
-        overrides = sys.argv[1:]
-        with initialize(config_path="./configs", version_base="1.3"):
-            cfg = compose(config_name="train", overrides=overrides)
-        args = OmegaConf.to_object(cfg)
-        out_dir = Path(args["output_path"])
-        out_dir.mkdir(parents=True, exist_ok=True) 
-        # load datasets:
+        # Check for missing values and report them
+        required_columns = ['config_name', 'epochs', 'batch_size', 'lr']
+        for col in required_columns:
+            if col in df.columns:
+                missing_count = df[col].isna().sum()
+                if missing_count > 0:
+                    logger.warning(f"Column '{col}' has {missing_count} missing values. Defaults will be used.")
+            else:
+                logger.error(f"Required column '{col}' is missing from {csv_path}")
+        
+        return df
+    except Exception as e:
+        logger.error(f"Error reading {csv_path}: {e}")
+        return None
+
+def run_config_on_all_datasets(config_row, base_args, results_dir):
+    logger.info(f"Running config {config_row['config_name']} on mtl")
+    
+    # Handle NaN values in hyperparameters - use NaN or -1 if missing
+    try:
+        epochs = int(config_row['epochs']) if pd.notna(config_row['epochs']) else -1
+    except (ValueError, TypeError):
+        epochs = -1
+        logger.warning(f"Invalid epochs value for config {config_row['config_name']}, using -1")
+    
+    try:
+        batch_size = int(config_row['batch_size']) if pd.notna(config_row['batch_size']) else -1
+    except (ValueError, TypeError):
+        batch_size = -1
+        logger.warning(f"Invalid batch_size value for config {config_row['config_name']}, using -1")
+    
+    try:
+        lr = float(config_row['lr']) if pd.notna(config_row['lr']) else np.nan
+    except (ValueError, TypeError):
+        lr = np.nan
+        logger.warning(f"Invalid lr value for config {config_row['config_name']}, using NaN")
+
+    run_output_dir = results_dir / f"config_{config_row['config_name']}" / "mtl"
+    run_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    run_args = base_args.copy()
+    run_args.update({
+        'dataset': 'ag_news',  
+        'approach': 'lstm', 
+        'epochs': epochs,
+        'batch_size': batch_size,
+        'lr': lr,
+        'output_path': str(run_output_dir),
+        'data_fraction': DATA_FRACTION,
+        'is_mtl': True  
+    })
+    
+    try:
+        logger.info(f"Loading datasets with data fraction {run_args['data_fraction']}")
+
         dataset_classes, train_dfs, val_dfs, test_dfs, num_classes = load_dataset(
-            dataset=args["dataset"],
-            data_path=Path(args["data_path"]).absolute(),
-            seed=args["seed"],
-            val_size= args["val_size"],
-            is_mtl=args["is_mtl"]
-        )   
-        func = neps_training_wrapper(args, dataset_classes, train_dfs, val_dfs, test_dfs, num_classes, out_dir)
+            dataset=run_args["dataset"],  
+            data_path=Path(run_args["data_path"]).absolute(),
+            seed=run_args["seed"],
+            val_size=run_args["val_size"],
+            is_mtl=run_args["is_mtl"]  
+        )
+        
+        print("Run args for config:")
+        for key, value in run_args.items():
+            print(f"{key}: {value}")
+        
+        logging.info(f"Starting main loop with {len(train_dfs)} train datasets, {len(val_dfs)} val datasets, and {len(test_dfs)} test datasets")
+        result = main_loop(
+            train_dfs=train_dfs,
+            val_dfs=val_dfs,
+            test_dfs=test_dfs,
+            num_classes=num_classes,
+            dataset_classes=dataset_classes,
+            data_fraction=run_args["data_fraction"],
+            output_path=Path(run_args["output_path"]).absolute(),
+            seed=run_args["seed"],
+            approach=run_args["approach"], 
+            vocab_size=run_args["model_config"]["vocab_size"],
+            token_length=run_args["token_length"],
+            epochs=run_args["epochs"],
+            batch_size=run_args["batch_size"],
+            lr=run_args["lr"],
+            weight_decay=run_args["weight_decay"],
+            ffnn_hidden=run_args["ffnn_hidden_layer_dim"],
+            lstm_emb_dim=run_args["model_config"]["lstm_emb_dim"],
+            lstm_hidden_dim=run_args["model_config"]["lstm_hidden_dim"],
+            load_path=Path(run_args["load_path"]) if run_args["load_path"] else None,
+            model_name=run_args["model_name"],
+            bert_lr=run_args["bert_lr"],
+            num_bert_layers_to_unfreeze=run_args["num_bert_layers_to_unfreeze"]
+        )
+        
+        logger.info(f"Successfully completed config {config_row['config_name']} on datasets")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error running config {config_row['config_name']} on datasets: {e}")
+        return None
+        
+        logger.info(f"Successfully completed config {config_row['config_name']} on {dataset_name}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error running config {config_row['config_name']} on {dataset_name}: {e}")
+        return None
+
+def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
     
-        for conf in self.current_confs:
-            lr = conf["conf"]["lr"]
-            bs = conf["conf"]["batch_size"]
-            res = func("bo-manual", lr, epochs=2, batch_size=bs)
-            result = {
-                "config_id": conf["config_id"],
-                "fidelity_id": '0',
-                "loss": res["objective_to_minimize"],
-                "test_roc_auc": res["info_dict"]["test_mean_roc_auc"],
-                "conf": {"lr": lr, "batch_size": bs, "epochs": 2},
+    top5_df = read_top5_configs()
+    if top5_df is None:
+        logger.error("Failed to load configurations. Exiting.")
+        return
+    
+    with initialize(config_path="./configs", version_base="1.3"):
+        cfg = compose(config_name="train")
+    base_args = OmegaConf.to_object(cfg)
+    
+    results_dir = Path("correlation_results")
+    results_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_file = results_dir / "correlation_run.log"
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    logging.getLogger().addHandler(file_handler)
+    
+    logger.info(f"Starting correlation analysis with {len(top5_df)} configurations on datasets")
+    
+    all_results = []
+    
+    for idx, config_row in top5_df.iterrows():
+        config_results = {
+            'config_name': config_row['config_name'],
+            'original_objective': config_row['objective_to_minimize'],
+            'epochs': config_row['epochs'],
+            'batch_size': config_row['batch_size'],
+            'lr': config_row['lr'],
+            'all_datasets_result': {}
+        }
+        
+        logger.info(f"=" * 60)
+        logger.info(f"Running Configuration {config_row['config_name']} on ALL DATASETS (MTL)")
+        logger.info(f"=" * 60)
+        
+        result = run_config_on_all_datasets(config_row, base_args, results_dir)
+        
+        if result is not None:
+            config_results['all_datasets_result'] = {
+                'objective_to_minimize': result.get('objective_to_minimize', float('inf')),
+                'info_dict': result.get('info_dict', {})
             }
-            print(result)
-            self.next_confs.append(result)
+        else:
+            config_results['all_datasets_result'] = {
+                'objective_to_minimize': float('inf'),
+                'info_dict': {}
+            }
+        
+        all_results.append(config_results)
+    
+    # Convert numpy types to native Python types for YAML serialization
+    all_results_clean = convert_numpy_types(all_results)
+    
+    summary_file = results_dir / "summary_results.yaml"
+    with open(summary_file, 'w') as f:
+        yaml.safe_dump(all_results_clean, f, default_flow_style=False)
+    
+    logger.info(f"All runs completed! Results saved to {results_dir}")
+    logger.info(f"Summary results saved to {summary_file}")
+    
+    print("\n" + "="*80)
+    print("CORRELATION ANALYSIS SUMMARY")
+    print("="*80)
+    
+    for config_result in all_results:
+        print(f"\nConfiguration {config_result['config_name']}:")
+        print(f"  Original HPO Objective: {config_result['original_objective']:.4f}")
+        print(f"  Hyperparameters: epochs={config_result['epochs']}, batch_size={config_result['batch_size']}, lr={config_result['lr']}")
+        print("   Result:")
+        
+        result = config_result['all_datasets_result']
+        obj_val = result['objective_to_minimize']
+        if obj_val != float('inf'):
+            print(f"    Combined MTL: objective={obj_val:.4f}")
+            for dataset in ALL_DATASETS:
+                roc_key = f"{dataset}_roc_auc_score"
+                if roc_key in result['info_dict']:
+                    print(f"      {dataset:>10} ROC AUC: {result['info_dict'][roc_key]:.4f}")
+            if 'test_mean_roc_auc' in result['info_dict']:
+                print(f"      {'Mean Test':>10} ROC AUC: {result['info_dict']['test_mean_roc_auc']:.4f}")
+        else:
+            print(f"    Combined MTL: FAILED")
+    
+    print("="*80)
 
-    def calculate_spearman(self):
-        current_dict = {c["config_id"]: c["loss"] for c in self.current_confs}
-        next_dict = {n["config_id"]: n["loss"] for n in self.next_confs}
-        
-        common_ids = set(current_dict.keys()) & set(next_dict.keys())
-        
-        if len(common_ids) < 3:
-            print("Not enough paired configs to calculate correlation.")
-            return
-        
-        losses_current = [current_dict[cid] for cid in common_ids]
-        losses_next = [next_dict[cid] for cid in common_ids]
-        
-        corr, p_val = spearmanr(losses_current, losses_next)
-        print(f"Spearman Correlation: {corr:.4f}, P-value: {p_val:.4f}")
-
-        # --- Plot ---
-        plt.figure(figsize=(8, 6))
-        plt.scatter(losses_next, losses_current, alpha=0.7, edgecolors='k')
-        plt.xlabel("Loss at Low Fidelity (e.g., epochs=2)")
-        plt.ylabel("Loss at High Fidelity (e.g., epochs=full)")
-        plt.title(f"Spearman Correlation = {corr:.2f}, p = {p_val:.2f}")
-        
-        lims = [min(min(losses_next), min(losses_current)), max(max(losses_next), max(losses_current))]
-        plt.plot(lims, lims, 'r--', label='y = x')
-        plt.legend()
-        plt.grid(True, linestyle='--', alpha=0.6)
-        plt.tight_layout()
-        plt.savefig("fidelity_spearman_plot.png")
-        plt.show()
-
-evaluation = CorrelationEvaluation(result_dir="neps_results/bayesian_optimization2")
-# evaluation.generate_lower_fidelity()
-# evaluation.calculate_spearman()
+if __name__ == "__main__":
+    out_dir = Path("scaling_to_all_datasets")
+    out_dir.
+    main(out_dir=)

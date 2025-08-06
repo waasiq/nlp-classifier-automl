@@ -1,27 +1,39 @@
-import pandas as pd
-import shap
-from xgboost import XGBRegressor
+from fanova import fANOVA
+from ConfigSpace import ConfigurationSpace, UniformFloatHyperparameter, UniformIntegerHyperparameter
 import numpy as np
 
-# Example dataframe
-df = pd.DataFrame([
-    {'lr': 0.001, 'batch_size': 32, 'val_auc': 0.85},
-    {'lr': 0.01, 'batch_size': 64, 'val_auc': 0.87},
-    # ...
-])
-X = df[['lr', 'batch_size']]
-y = df['val_auc']
+def compute_fanova(self):
+    cs = ConfigurationSpace()
+    cs.add([
+        UniformFloatHyperparameter("lr", lower=1e-5, upper=1e-1, log=True),
+        UniformIntegerHyperparameter("batch_size", lower=16, upper=512, log=True),
+        UniformIntegerHyperparameter("epochs", lower=1, upper=10)  # optional if fixed
+    ])
+    
+    # Choose your dataset (e.g., current_confs at highest fidelity)
+    data = [c for c in self.current_confs if c["conf"]["epochs"] == max(
+        c["conf"]["epochs"] for c in self.current_confs)]
+    
+    if len(data) < 5:
+        print("Too few points for reliable fANOVA.")
+        return
 
-X['log_lr'] = np.log10(X['lr'])
-X = X.drop(columns=['lr'])
+    X = []
+    y = []
+    for c in data:
+        X.append([
+            c["conf"]["lr"],
+            c["conf"]["batch_size"],
+            # c["conf"]["epochs"],  # optional
+        ])
+        y.append(c["loss"])
 
+    X = np.array(X)
+    y = np.array(y)
 
-model = XGBRegressor()
-model.fit(X, y)
+    fanova_obj = fANOVA(X, y, config_space=cs)
 
-
-explainer = shap.Explainer(model)
-shap_values = explainer(X)
-
-# Summary plot
-shap.summary_plot(shap_values, X)
+    print("\nHyperparameter Importance (fANOVA):")
+    for i, hp in enumerate(["lr", "batch_size"]):
+        imp = fanova_obj.quantify_importance((i,))
+        print(f"{hp}: {imp['individual importance']:.4f}")
