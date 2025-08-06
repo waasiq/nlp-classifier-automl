@@ -35,6 +35,7 @@ class WandbLogger:
         self.log_dir = log_dir
         self.training_time = time.time()
         self.epoch_time = time.time()
+        self.run_name = run_name
 
         # Initialize wandb
         wandb.init(
@@ -94,6 +95,9 @@ class WandbLogger:
         """
         Marks the training run as finished and closes the wandb run.
         """
+        # write run_info.yaml 
+        with open(self.log_dir / "run_info.yaml", "w") as file:
+            yaml.dump({"run_name": self.run_name}, file, default_flow_style=False)
         wandb.finish()
 
 

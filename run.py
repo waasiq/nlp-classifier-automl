@@ -18,6 +18,7 @@ import sys
 import math
 import logging
 import numpy as np
+import copy
 from pathlib import Path
 from sklearn.metrics import accuracy_score, classification_report
 import yaml
@@ -98,7 +99,7 @@ def main_loop(
         lstm_hidden_dim: int = 128,
         fraction_layers_to_finetune: float = 1.0,
         load_path: Path = None,
-        pipeline_directory: Path | None = None,
+        pipeline_directory: Path | str = "",
     ) -> None:
     #create run_name with random 6 characters
     run_name = f"{''.join(dataset_classes.keys())}_config_{pipeline_directory}_{np.random.randint(100000, 999999)}"
@@ -107,7 +108,7 @@ def main_loop(
     logger.info("Fitting Text AutoML")
 
     np.random.seed(seed)
-
+    train_dfs = copy.deepcopy(train_dfs)
     n_class_samples = round(sum(len(v) for v in train_dfs.values()) * data_fraction / len(train_dfs))
     for dataset, train_df in train_dfs.items():
         _subsample = np.random.choice(

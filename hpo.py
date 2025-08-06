@@ -39,8 +39,8 @@ from omegaconf import OmegaConf
 logger = logging.getLogger(__name__)
 
 
-def neps_training_wrapper(args, dataset_classes, train_dfs, val_dfs, test_dfs, num_classes):
-    def evaluate_pipeline(pipeline_directory, lr, data_fraction):
+def neps_training_wrapper(args, dataset_classes, train_dfs, val_dfs, test_dfs, num_classes, out_dir):
+    def evaluate_pipeline(pipeline_directory, lr, epochs, batch_size):
         return main_loop(
             train_dfs=train_dfs,
             val_dfs=val_dfs,
@@ -48,14 +48,14 @@ def neps_training_wrapper(args, dataset_classes, train_dfs, val_dfs, test_dfs, n
             num_classes=num_classes,
             dataset_classes=dataset_classes,
             pipeline_directory=pipeline_directory,
-            data_fraction=data_fraction,
+            data_fraction=args["data_fraction"],
             output_path=out_dir.absolute(),
             seed=args["seed"],
             approach=args["approach"],
             vocab_size=args["model_config"]["vocab_size"],
             token_length=args["token_length"],
-            epochs=args["epochs"],
-            batch_size=args["batch_size"],
+            epochs=epochs,
+            batch_size=batch_size,
             lr=lr,
             weight_decay=args["weight_decay"],
             ffnn_hidden=args["ffnn_hidden_layer_dim"],
@@ -94,6 +94,6 @@ if __name__ == "__main__":
     )
 
     neps.run(
-        evaluate_pipeline= neps_training_wrapper(conf, dataset_classes, train_dfs, val_dfs, test_dfs, num_classes),
+        evaluate_pipeline= neps_training_wrapper(conf, dataset_classes, train_dfs, val_dfs, test_dfs, num_classes, out_dir),
         **nep_configs
     )

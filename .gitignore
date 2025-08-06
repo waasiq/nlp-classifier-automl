@@ -18,3 +18,5 @@ neps_sh/
 results2/
 neps_results_df/
 
+plots/
+top5.csv
