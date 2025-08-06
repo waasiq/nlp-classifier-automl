@@ -35,8 +35,8 @@ class WandbLogger:
         self.log_dir = log_dir
         self.training_time = time.time()
         self.epoch_time = time.time()
-        self._step_counter = 0  # Add monotonic step counter for NEPS
-        self._step_counter = 0  # Internal step counter to ensure monotonic steps
+        self.run_name = run_name
+        self.step_counter = 0  
 
         # Initialize wandb with unique run ID to avoid conflicts in NEPS
         import uuid
@@ -84,8 +84,8 @@ class WandbLogger:
 
     def _get_next_step(self):
         """Get the next monotonic step number."""
-        self._step_counter += 1
-        return self._step_counter
+        self.step_counter += 1
+        return self.step_counter
 
     def step(self, total_loss: float, task, step):
         """
@@ -124,6 +124,9 @@ class WandbLogger:
         """
         Marks the training run as finished and closes the wandb run.
         """
+        # write run_info.yaml 
+        with open(self.log_dir / "run_info.yaml", "w") as file:
+            yaml.dump({"run_name": self.run_name}, file, default_flow_style=False)
         wandb.finish()
 
 

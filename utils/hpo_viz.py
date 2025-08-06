@@ -31,9 +31,9 @@ def get_plot_marker():
 class HPOVisualization:
     """Utility to parse TabPFN HPO results and extract necessary data."""
 
-    def __init__(self, result_dir: str | Path, model_name: str = "transformer"):
+    def __init__(self, result_dir: str | Path, method: str = "lstm"):
         self.result_dir = Path(result_dir)
-        self.model_name = model_name
+        self.method = method
         self.val_losses: Dict[int, float] = {}
         self.reports: Dict[int, dict] = {}
         self.runs: Dict[int, dict] = {}
@@ -52,16 +52,13 @@ class HPOVisualization:
             
             
             if not report_path.is_file():
-                print(f"skipping config {config_id}, because of not existing report")
+                print(f"skipping config {config_id}, beacause of not existing report")
                 continue
 
             with report_path.open("r", encoding="utf-8") as fh:
                 report = yaml.safe_load(fh)
-                if report is None:
-                    print(f"skipping config {config_id}, because report file is empty or invalid")
-                    continue
                 if report["reported_as"] != "success":
-                    print(f"skipping config {config_id}, because of not successful report")
+                    print(f"skipping config {config_id}, beacause of not successful report")
                     continue
             wandb_dir = cfg_dir / "wandb"
             for run in wandb_dir.glob("run-*"):
@@ -84,14 +81,13 @@ class HPOVisualization:
                 "objective_to_minimize": report["objective_to_minimize"], 
                 "evaluation_duration": report["evaluation_duration"],
                 "trial_id": trial_id,
-                "fidelity_id": fidelity_id,
-                "epochs": report["extra"]["epochs"]}
+                "fidelity_id": fidelity_id}
             
             results.update(report["extra"])
             results.update(config)
             self.reports[config_id] = results
             
-            self.fidelities.add(results["data_fraction"])
+            self.fidelities.add(results["epochs"])
 
         if not self.val_losses:
             raise RuntimeError("No valid report.yaml files found.")
@@ -114,16 +110,16 @@ class HPOVisualization:
         ax.legend()
         fig.tight_layout()
         Path("plots").mkdir(exist_ok=True)
-        fig.savefig(f"plots/{self.model_name}-all-learning-curves.png", dpi=150)
-        print(f"File: plots/{self.model_name}-all-learning-curves.png ............Saved")
+        fig.savefig(f"plots/{self.method}-all-learning-curves.png", dpi=150)
+        print(f"File: plots/{self.method}-all-learning-curves.png ............Saved")
 
 
     def get_top_k_configs(self, k: int, save: Path) -> None:
         """ Get top-k configs based on the objective to minimize and save the detail in csv"""
         configs_distinct_dict = {}
         for report in self.reports.values():
-            key = (report["bert_lr"], report["batch_size"])
-            if key in configs_distinct_dict and report["data_fraction"] < configs_distinct_dict[key]["data_fraction"]:
+            key = (report["lr"], report["batch_size"])
+            if key in configs_distinct_dict and report["epochs"] < configs_distinct_dict[key]["epochs"]:
                 continue
             else:
                 configs_distinct_dict[key] = report
@@ -131,9 +127,6 @@ class HPOVisualization:
         configs_distinct = list(configs_distinct_dict.values())
         headers = configs_distinct[0].keys()
         rows = sorted(configs_distinct, key=lambda x: x["objective_to_minimize"], reverse=False)[:k]
-        
-        save.parent.mkdir(parents=True, exist_ok=True)
-        
         with open(save, 'w+') as f:
             writer = csv.DictWriter(f, fieldnames=list(headers))
             writer.writeheader()
@@ -144,7 +137,7 @@ class HPOVisualization:
         val_losses = np.array(list(self.val_losses.values()))
 
         ax = ax or plt.gca()
-        ax.plot(steps, val_losses, marker='o', lw=2, label=f"{self.model_name} val loss")
+        ax.plot(steps, val_losses, marker='o', lw=2, label=f"{self.method} val loss")
         ax.set_title("Validation loss vs Config index")
         ax.set_xlabel("Config index")
         ax.set_ylabel("Validation loss")
@@ -156,7 +149,7 @@ class HPOVisualization:
         steps = np.arange(1, len(incumbent) + 1)
 
         ax = ax or plt.gca()
-        ax.plot(steps, incumbent, marker=get_plot_marker(), lw=2, label=f"{self.model_name} incumbent")
+        ax.plot(steps, incumbent, marker=get_plot_marker(), lw=2, label=f"{self.method} incumbent")
         ax.set_title("Incumbent over configs")
         ax.set_xlabel("Config index")
         ax.set_ylabel("Best val loss so far")
@@ -165,28 +158,21 @@ class HPOVisualization:
 
     def plot_incumbent_over_epoch(self, ax: Axes | None = None) -> Axes:
         incumbent = np.minimum.accumulate(list(self.val_losses.values()))
-        print(f"incumbent: {incumbent}")
-        total_data_points = 50995
-        costs = [self.reports.get(conf)["data_fraction"] * total_data_points for conf in self.val_losses.keys()]
-        print(costs)
+        costs = [self.reports.get(conf)["epochs"] for conf in self.val_losses.keys()]
         wall_times = np.cumsum(costs)
-        print(wall_times)
         ax = ax or plt.gca()
-        ax.plot(wall_times, incumbent, marker='o', lw=2, label=f"{self.model_name} incumbent")
-        ax.set_title("Incumbent over cumulative data points")
-        ax.set_xlabel("Cumulative Data Points Processed (×1e6 = millions)")
+        ax.plot(wall_times, incumbent, marker='o', lw=2, label=f"{self.method} incumbent")
+        ax.set_title("Incumbent over epochs")
+        ax.set_xlabel("Epochs")
         ax.set_ylabel("Best val loss so far")
         ax.grid(True, ls=":", alpha=0.6)
-        ax.ticklabel_format(style='scientific', axis='x', scilimits=(6,6))
         return ax
 
     def plot_pareto(self, save: Path | None = None) -> None:
         """Scatter loss vs cost, highlight the non‑dominated front."""
-        # Convert data_fraction to actual data points (assuming 50995 total data points)
-        total_data_points = 50995
-        costs = [self.reports.get(conf)["data_fraction"] * total_data_points for conf in self.val_losses.keys()]
+        costs = [self.reports.get(conf)["epochs"] for conf in self.val_losses.keys()]
         c_arr = np.array(costs)
-        l_arr = np.array(list(self.val_losses.values()))
+        l_arr = np.array(self.val_losses)
 
         idx = np.argsort(c_arr)
         c_sorted, l_sorted = c_arr[idx], l_arr[idx]
@@ -207,13 +193,11 @@ class HPOVisualization:
             label="Pareto front",
             zorder=5,
         )
-        plt.title(f"Pareto plot – {self.model_name}")
-        plt.xlabel("Data Points Used (×1e3 = thousands)")
+        plt.title(f"Pareto plot – {self.method}")
+        plt.xlabel("Training cost (s)")
         plt.ylabel("Validation loss")
         plt.grid(True, ls=":", alpha=0.6)
         plt.legend()
-        # Format x-axis to show values in thousands for readability  
-        plt.gca().ticklabel_format(style='scientific', axis='x', scilimits=(3,3))
         plt.tight_layout()
 
         if save:
@@ -231,47 +215,47 @@ def main() -> None:
     # parser.add_argument("--model", required=True, choices=["lstm", "bert"])
     # args = parser.parse_args()
 
-    asha_viz = HPOVisualization(Path("neps_results/asha"), 'ASHA')
-    #bo_viz = HPOVisualization(Path("neps_results/bo"), 'BO')
-    hb_viz = HPOVisualization(Path("neps_results/hyperband"), 'HB')
-    #asha_viz.get_plot_for_given_config()
+    asha_viz = HPOVisualization(Path("neps_results/asha2"), 'ASHA')
+    # bo_viz = HPOVisualization('neps_results/bayesian_optimization2', 'BO')
+    hb_viz = HPOVisualization('neps_results/hyperband', 'HB')
+    # asha_viz.get_plot_for_given_config()
     # # bo_viz.get_plot_for_given_config()
     # hb_viz.get_plot_for_given_config()
     
     asha_viz.get_top_k_configs(k=10, save=Path("plots") / "top10-asha.csv")
-   # bo_viz.get_top_k_configs(k=10, save=Path("plots") / "top10-bo.csv")
+    # bo_viz.get_top_k_configs(k=10, save=Path("plots") / "top10-bo.csv")
     hb_viz.get_top_k_configs(k=10, save=Path("plots") / "top10-hb.csv")
 
-    # Plot both curves on the same figure
-    fig, ax = plt.subplots(figsize=(6, 4))
-    asha_viz.plt_learning_curve(ax=ax)
-    #bo_viz.plt_learning_curve(ax=ax)
-    hb_viz.plt_learning_curve(ax=ax)
-    ax.legend()
-    fig.tight_layout()
-    Path("plots").mkdir(exist_ok=True)
-    fig.savefig("plots/learning_curve_plot.png", dpi=150)
-    print("[saved] plots/learning_curve_plot.png")
+    # # Plot both curves on the same figure
+    # fig, ax = plt.subplots(figsize=(6, 4))
+    # asha_viz.plt_learning_curve(ax=ax)
+    # bo_viz.plt_learning_curve(ax=ax)
+    # hb_viz.plt_learning_curve(ax=ax)
+    # ax.legend()
+    # fig.tight_layout()
+    # Path("plots").mkdir(exist_ok=True)
+    # fig.savefig("plots/learning_curve_plot.png", dpi=150)
+    # print("[saved] plots/learning_curve_plot.png")
 
-    fig, ax = plt.subplots(figsize=(6, 4))
-    asha_viz.plot_incumbent(ax=ax)
-    #bo_viz.plot_incumbent(ax=ax)
-    hb_viz.plot_incumbent(ax=ax)
-    ax.legend()
-    fig.tight_layout()
-    Path("plots").mkdir(exist_ok=True)
-    fig.savefig("plots/incumbent_plot.png", dpi=150)
-    print("[saved] plots/incumbent_plot.png")
+    # fig, ax = plt.subplots(figsize=(6, 4))
+    # asha_viz.plot_incumbent(ax=ax)
+    # bo_viz.plot_incumbent(ax=ax)
+    # hb_viz.plot_incumbent(ax=ax)
+    # ax.legend()
+    # fig.tight_layout()
+    # Path("plots").mkdir(exist_ok=True)
+    # fig.savefig("plots/incumbent_plot.png", dpi=150)
+    # print("[saved] plots/incumbent_plot.png")
 
-    fig, ax = plt.subplots(figsize=(6, 4))
-    asha_viz.plot_incumbent_over_epoch(ax=ax)
-   #bo_viz.plot_incumbent_over_epoch(ax=ax)
-    hb_viz.plot_incumbent_over_epoch(ax=ax)
-    ax.legend()
-    fig.tight_layout()
-    Path("plots").mkdir(exist_ok=True)
-    fig.savefig("plots/incumbent_over_time_plot.png", dpi=150)
-    print("[saved] plots/incumbent_over_time_plot.png")
+    # fig, ax = plt.subplots(figsize=(6, 4))
+    # asha_viz.plot_incumbent_over_epoch(ax=ax)
+    # bo_viz.plot_incumbent_over_epoch(ax=ax)
+    # hb_viz.plot_incumbent_over_epoch(ax=ax)
+    # ax.legend()
+    # fig.tight_layout()
+    # Path("plots").mkdir(exist_ok=True)
+    # fig.savefig("plots/incumbent_over_time_plot.png", dpi=150)
+    # print("[saved] plots/incumbent_over_time_plot.png")
 
 
 if __name__ == "__main__":

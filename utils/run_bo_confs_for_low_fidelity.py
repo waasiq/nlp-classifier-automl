@@ -86,7 +86,7 @@ class CorrelationEvaluation:
             }
             print(result)
             self.next_confs.append(result)
-            with open("low_fid_res.csv", mode="a", newline="") as file:
+            with open("low_fid_res1.csv", mode="a", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(result.values())
 
@@ -122,6 +122,5 @@ class CorrelationEvaluation:
         plt.show()
 
 evaluation = CorrelationEvaluation(result_dir="neps_results/random_search2")
-# evaluation.current_confs = [{'config_id': '16', 'fidelity_id': '1', 'loss': 0.19624001600640262, 'test_roc_auc': 0.8485947050394889, 'conf': {'batch_size': 256, 'lr': 0.007324411068111658}}, {'config_id': '17', 'fidelity_id': '1', 'loss': 0.19083961584633857, 'test_roc_auc': 0.8660680829342942, 'conf': {'batch_size': 256, 'lr': 0.00033015216467902064}}, {'config_id': '18', 'fidelity_id': '1', 'loss': 0.20924497799119646, 'test_roc_auc': 0.845243866515295, 'conf': {'batch_size': 256, 'lr': 0.00602533295750618}}, {'config_id': '19', 'fidelity_id': '1', 'loss': 0.20404289715886348, 'test_roc_auc': 0.8564050437512051, 'conf': {'batch_size': 128, 'lr': 0.0037530928384512663}}, {'config_id': '20', 'fidelity_id': '1', 'loss': 0.29164193677470984, 'test_roc_auc': 0.6872454616888697}]
-# evaluation.generate_lower_fidelity()
-# evaluation.calculate_spearman()
+evaluation.generate_lower_fidelity()
+evaluation.calculate_spearman()

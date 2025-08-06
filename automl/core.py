@@ -361,12 +361,12 @@ class TextAutoML:
                 mean_val_auc = total_val_auc / len(train_loaders)
                 if mean_val_accuracy > best_val_accuracy:
                     best_val_accuracy = mean_val_accuracy
-                    #early_stop_patience = 2
-                # else:
-                    #early_stop_patience -= 1
-                    #if early_stop_patience <= 0:
-                    #    logger.info(f"Early stopping at epoch {epoch + 1}. Best validation accuracy: {best_val_accuracy:.4f}")
-                    #    break
+                    early_stop_patience = 2
+                else:
+                    early_stop_patience -= 1
+                    if early_stop_patience <= 0:
+                        logger.info(f"Early stopping at epoch {epoch + 1}. Best validation accuracy: {best_val_accuracy:.4f}")
+                        break
                 self.plotter.epoch_info(
                     mean_val_accuracy=mean_val_accuracy, 
                     mean_val_auc=mean_val_auc, 

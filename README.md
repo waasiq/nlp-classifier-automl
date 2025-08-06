@@ -19,11 +19,23 @@ Then install the repository by running the following command:
 pip install -e .
 ```
 
+## Datasets
+
+You should place your datasets in the `data` folder. The datasets should be in CSV format with the following columns:
+- `text`: The text data for classification.
+- `label`: The label for the text data.
+
+Example dataset structure:
+
+```data/
+├── yelp  
+  ├── test.csv
+  ├── train.csv
+```
+
 ## Running the code
 
-1. The code using Hydra for configuration management. The configuration for training is located in config/train.yaml.
-
-#### Running the training script
+The code using Hydra for configuration management. The configuration for training is located in config/train.yaml.
 
 ```bash
 python run.py 
@@ -33,18 +45,27 @@ This will run the training script with the configuration specified in config/tra
 
 We use hpo.py for hyperparameter optimization. The configuration for HPO is located in config/neps.yaml.
 
-#### Running the HPO script
-
 ```bash
 python hpo.py
 ```
 
-
 ### Files in util folder 
 
-
+The util folder contains utility functions for the project. The main files are:
+- `hpo_importance.py`: Computes the importance of hyperparameters using SHAP.
+- `hpo_viz.py`: Generates the visualization for HPOs and also saves top HPO trials in the HPO_viz.
+- `scaling_top_trials.py`: Reads top configs from CSV file and runs then runs it for complete data fracton.
+- `run_bo_confs_for_low_fidelity.py`: Runs the Bayesian Optimization for low fidelity configurations.
+- `hpo_with_fidelity_tracking.py`: File which keeps saving fidelity tracking json was used by one of the team members.
+- `analyze_fidelity_correlation.py`: Analyzes the correlation between low and hihg fidelity using Spearman correlation.
 
 ### Multi Task Learning
 
 We leverage the `MultiTaskLearning` class to train a model on multiple tasks. Here is an image explaining it:
 ![Multi Task Learning](https://raw.githubusercontent.com/waasiq/nlp-classifier-automl/main/img/multi_task_learning.png)
+
+
+### Team Members
+
+1. Nastaran Alipour 
+2. Waasiq Masood

@@ -18,6 +18,7 @@ import sys
 import math
 import logging
 import numpy as np
+import copy
 from pathlib import Path
 from sklearn.metrics import accuracy_score, classification_report
 import yaml
@@ -113,7 +114,7 @@ def main_loop(
     logger.info("Fitting Text AutoML")
 
     np.random.seed(seed)
-
+    train_dfs = copy.deepcopy(train_dfs)
     n_class_samples = round(sum(len(v) for v in train_dfs.values()) * data_fraction / len(train_dfs))
     min_samples_per_dataset = 10  
     n_class_samples = max(n_class_samples, min_samples_per_dataset)
