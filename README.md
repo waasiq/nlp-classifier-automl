@@ -62,7 +62,7 @@ The util folder contains utility functions for the project. The main files are:
 ### Multi Task Learning
 
 We leverage the `MultiTaskLearning` class to train a model on multiple tasks. Here is an image explaining it:
-![Multi Task Learning](https://raw.githubusercontent.com/waasiq/nlp-classifier-automl/main/img/multi_task_learning.png)
+![Multi Task Learning](https://raw.githubusercontent.com/waasiq/nlp-classifier-automl/refs/heads/main/img/multi_task_learning.png)
 
 
 ### Team Members
