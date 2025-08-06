@@ -5,12 +5,11 @@ pipeline_space:
     choices: [16, 32, 64]
   num_bert_layers_to_unfreeze: 
     choices: [1, 2]
-
   data_fraction:
     lower: 0.3
     upper: 1.0
-    is_fidelity: True
+    #is_fidelity: True
 
-optimizer: "asha"
+optimizer: "bayesian_optimization"
 max_evaluations_total: 50
 root_directory: neps_results/

@@ -17,7 +17,7 @@ defaults:
     - neps: transformer
 
 seed: 42
-dataset: ag_news       # choices: [ag_news, imdb, amazon, dbpedia, yelp]
+dataset: yelp       # choices: [ag_news, imdb, amazon, dbpedia, yelp]
 output_path: ./results2/      # if null ➜ "./results/dataset=${dataset}/seed=${seed}"
 load_path: null        # resume checkpoint
 data_path: 'data'        # if null ➜ "./.data"
@@ -33,12 +33,12 @@ epochs: 3
 batch_size: 32
 lr: 2e-4
 weight_decay: 0.1
-#data_fraction: 0.001     # (0, 1]
+data_fraction: 1.0     # (0, 1]
 
 # Transformer Model‑specific settings
 bert_lr: 0.00005          # bert_lr
 num_bert_layers_to_unfreeze: 2  # num_bert_layers_to_unfreeze
-model_name: "distilroberta-base"  # choices: [distilbert-base-cased, distilroberta-base, roberta-base]
+model_name: "distilbert-base-cased"  # choices: [distilbert-base-cased, distilroberta-base, roberta-base]
 
 # LSTM Model‑specific settings
 lstm_emb_dim: 64          # lstm_emb_dim

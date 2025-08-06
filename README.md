@@ -1,17 +1,10 @@
-# AutoML Exam - SS25 (Text Data)
-
-This repo serves as a template for the exam assignment of the AutoML SS25 course
-at the university of Freiburg.
-
-The aim of this repo is to provide a minimal installable template to help you get up and running.
+# Multi Task Learning (MTL) Classifier for NLP Datasets
 
 ## Installation
 
-To install the repository, first create an environment of your choice and activate it. 
+To install the repository, create a conda environment . 
 
 For example, using `venv`:
-
-You can change the python version here to the version you prefer.
 
 **Virtual Environment**
 
