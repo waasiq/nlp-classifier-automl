@@ -31,9 +31,9 @@ def get_plot_marker():
 class HPOVisualization:
     """Utility to parse TabPFN HPO results and extract necessary data."""
 
-    def __init__(self, result_dir: str | Path, model_name: str = "lstm"):
+    def __init__(self, result_dir: str | Path, method: str = "lstm"):
         self.result_dir = Path(result_dir)
-        self.model_name = model_name
+        self.method = method
         self.val_losses: Dict[int, float] = {}
         self.reports: Dict[int, dict] = {}
         self.runs: Dict[int, dict] = {}
@@ -110,8 +110,8 @@ class HPOVisualization:
         ax.legend()
         fig.tight_layout()
         Path("plots").mkdir(exist_ok=True)
-        fig.savefig(f"plots/{self.model_name}-all-learning-curves.png", dpi=150)
-        print(f"File: plots/{self.model_name}-all-learning-curves.png ............Saved")
+        fig.savefig(f"plots/{self.method}-all-learning-curves.png", dpi=150)
+        print(f"File: plots/{self.method}-all-learning-curves.png ............Saved")
 
 
     def get_top_k_configs(self, k: int, save: Path) -> None:
@@ -137,7 +137,7 @@ class HPOVisualization:
         val_losses = np.array(list(self.val_losses.values()))
 
         ax = ax or plt.gca()
-        ax.plot(steps, val_losses, marker='o', lw=2, label=f"{self.model_name} val loss")
+        ax.plot(steps, val_losses, marker='o', lw=2, label=f"{self.method} val loss")
         ax.set_title("Validation loss vs Config index")
         ax.set_xlabel("Config index")
         ax.set_ylabel("Validation loss")
@@ -149,7 +149,7 @@ class HPOVisualization:
         steps = np.arange(1, len(incumbent) + 1)
 
         ax = ax or plt.gca()
-        ax.plot(steps, incumbent, marker=get_plot_marker(), lw=2, label=f"{self.model_name} incumbent")
+        ax.plot(steps, incumbent, marker=get_plot_marker(), lw=2, label=f"{self.method} incumbent")
         ax.set_title("Incumbent over configs")
         ax.set_xlabel("Config index")
         ax.set_ylabel("Best val loss so far")
@@ -161,7 +161,7 @@ class HPOVisualization:
         costs = [self.reports.get(conf)["epochs"] for conf in self.val_losses.keys()]
         wall_times = np.cumsum(costs)
         ax = ax or plt.gca()
-        ax.plot(wall_times, incumbent, marker='o', lw=2, label=f"{self.model_name} incumbent")
+        ax.plot(wall_times, incumbent, marker='o', lw=2, label=f"{self.method} incumbent")
         ax.set_title("Incumbent over epochs")
         ax.set_xlabel("Epochs")
         ax.set_ylabel("Best val loss so far")
@@ -193,7 +193,7 @@ class HPOVisualization:
             label="Pareto front",
             zorder=5,
         )
-        plt.title(f"Pareto plot – {self.model_name}")
+        plt.title(f"Pareto plot – {self.method}")
         plt.xlabel("Training cost (s)")
         plt.ylabel("Validation loss")
         plt.grid(True, ls=":", alpha=0.6)

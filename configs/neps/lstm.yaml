@@ -13,4 +13,4 @@ pipeline_space:
 
 optimizer: "asha"
 max_evaluations_total: 50
-root_directory: neps_results/asha2
+root_directory: neps_results/asha

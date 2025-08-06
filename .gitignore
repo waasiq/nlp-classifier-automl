@@ -19,4 +19,5 @@ results2/
 neps_results_df/
 
 plots/
-top5.csv
+*.csv
+*.png
