@@ -1,0 +1,16 @@
+pipeline_space:
+  lr:
+    lower: 0.0001
+    upper: 0.01
+    log: True
+  batch_size:
+    choices: [128, 256, 512]
+
+  epochs:
+    lower: 2
+    upper: 18
+    is_fidelity: True
+
+optimizer: "asha"
+max_evaluations_total: 50
+root_directory: neps_results/asha

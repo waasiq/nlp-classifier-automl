@@ -3,24 +3,32 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
-from automl.models import SimpleFFNN, LSTMClassifier
+from automl.models import LSTMClassifier, TransformerMultiTaskClassifier
 from automl.utils import SimpleTextDataset
 from pathlib import Path
 import logging
 from typing import Tuple
 from collections import Counter
+from automl.normalization import remove_markdowns
+from itertools import chain
+import random
+
+from muon import SingleDeviceMuonWithAuxAdam
+import time
+
+from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import label_binarize
+
 
 try:
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-
 
 class TextAutoML:
     def __init__(
@@ -33,15 +41,20 @@ class TextAutoML:
         batch_size=64,
         lr=1e-4,
         weight_decay=0.0,
+        model_name="distilbert-base-cased",
+        bert_lr=0.00005,
         ffnn_hidden=128,
         lstm_emb_dim=128,
         lstm_hidden_dim=128,
-        fraction_layers_to_finetune: float=1.0,
+        num_bert_layers_to_unfreeze: int=2,
+        plotter=None
     ):
         self.seed = seed
         np.random.seed(seed)
         torch.manual_seed(seed)
 
+        self.bert_lr = bert_lr
+        self.model_name = model_name
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.approach = approach
         self.vocab_size = vocab_size
@@ -50,11 +63,14 @@ class TextAutoML:
         self.batch_size = batch_size
         self.lr = lr
         self.weight_decay = weight_decay
+        self.scheduler = None
 
         self.ffnn_hidden = ffnn_hidden
         self.lstm_emb_dim = lstm_emb_dim
         self.lstm_hidden_dim = lstm_hidden_dim
-        self.fraction_layers_to_finetune = fraction_layers_to_finetune
+        self.num_bert_layers_to_unfreeze = num_bert_layers_to_unfreeze
+        
+        self.plotter = plotter
 
         self.model = None
         self.tokenizer = None
@@ -67,9 +83,9 @@ class TextAutoML:
 
     def fit(
         self,
-        train_df: pd.DataFrame,
-        val_df: pd.DataFrame,
-        num_classes: int,
+        train_dfs: dict[str, pd.DataFrame],
+        val_dfs: dict[str, pd.DataFrame],
+        num_classes: dict[str, int],
         approach=None,
         vocab_size=None,
         token_length=None,
@@ -80,7 +96,7 @@ class TextAutoML:
         ffnn_hidden=None,
         lstm_emb_dim=None,
         lstm_hidden_dim=None,
-        fraction_layers_to_finetune=None,
+        num_bert_layers_to_unfreeze=None,
         load_path: Path=None,
         save_path: Path=None,
     ):
@@ -92,7 +108,7 @@ class TextAutoML:
         - val_df (pd.DataFrame): Validation data with 'text' and 'label' columns.
         - num_classes (int): Number of classes in the dataset.
         - seed (int): Random seed for reproducibility.
-        - approach (str): Model type - 'tfidf', 'lstm', or 'transformer'. Default is 'auto'.
+        - approach (str): Model type - 'lstm', or 'transformer'. Default is 'auto'.
         - vocab_size (int): Maximum vocabulary size.
         - token_length (int): Maximum token sequence length.
         - epochs (int): Number of training epochs.
@@ -113,56 +129,47 @@ class TextAutoML:
         if ffnn_hidden is not None: self.ffnn_hidden = ffnn_hidden
         if lstm_emb_dim is not None: self.lstm_emb_dim = lstm_emb_dim
         if lstm_hidden_dim is not None: self.lstm_hidden_dim = lstm_hidden_dim
-        if fraction_layers_to_finetune is not None: self.fraction_layers_to_finetune = fraction_layers_to_finetune
+        if num_bert_layers_to_unfreeze is not None: self.num_bert_layers_to_unfreeze = num_bert_layers_to_unfreeze
         
         logger.info("Loading and preparing data...")
 
-        self.train_texts = train_df['text'].tolist()
-        self.train_labels = train_df['label'].tolist()
-        self.val_texts = val_df['text'].tolist()
-        self.val_labels = val_df['label'].tolist()
+        self.train_texts = {dataset: train_df['text'].tolist() for dataset, train_df in train_dfs.items()}
+        self.train_labels = {dataset: train_df['label'].tolist() for dataset, train_df in train_dfs.items()}
+        self.val_texts = {dataset: val_df['text'].tolist() for dataset, val_df in val_dfs.items()}
+        self.val_labels = {dataset: val_df['label'].tolist() for dataset, val_df in val_dfs.items()}
         self.num_classes = num_classes
-        logger.info(f"Train class distribution: {Counter(self.train_labels)}")
-        logger.info(f"Val class distribution: {Counter(self.val_labels)}")
+        train_class_dist = {dataset: Counter(train_label) for dataset, train_label  in self.train_labels.items()}
+        val_class_dist = {dataset: Counter(val_label) for dataset, val_label  in self.val_labels.items()}
+        logger.info(f"Train class distribution: {train_class_dist}")
+        logger.info(f"Val class distribution: {val_class_dist}")
 
         dataset = None
-        if self.approach == 'tfidf':
-            self.vectorizer = TfidfVectorizer(
-                max_features=self.vocab_size,
-                lowercase=True,
-                min_df=2,    # ignore words appearing in less than 2 sentences
-                max_df=0.8,  # ignore words appearing in > 80% of sentences
-                sublinear_tf=True,  # use log-spaced term-frequency scoring
-            )
-            X = self.vectorizer.fit_transform(self.train_texts).toarray()
-            dataset = torch.utils.data.TensorDataset(
-                torch.tensor(X, dtype=torch.float32),
-                torch.tensor(self.train_labels)
-            )
-            # models and dataloaders
-            train_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-            X = self.vectorizer.transform(self.val_texts).toarray()
-            _dataset = torch.utils.data.TensorDataset(
-                torch.tensor(X, dtype=torch.float32),
-                torch.tensor(self.val_labels)
-            )
-            val_loader = DataLoader(_dataset, batch_size=self.batch_size, shuffle=True)
-            self.model = SimpleFFNN(
-                X.shape[1], hidden=self.ffnn_hidden, output_dim=self.num_classes
-            )
+        if self.approach in ['lstm', 'transformer']:
+            if self.approach == 'transformer':
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            else:
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
 
-        elif self.approach in ['lstm', 'transformer']:
-            model_name = 'distilbert-base-uncased'
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.vocab_size = self.tokenizer.vocab_size
-            dataset = SimpleTextDataset(
-                self.train_texts, self.train_labels, self.tokenizer, self.token_length
-            )
-            train_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-            _dataset = SimpleTextDataset(
-                self.val_texts, self.val_labels, self.tokenizer, self.token_length
-            )
-            val_loader = DataLoader(_dataset, batch_size=self.batch_size, shuffle=True)
+            datasets = {
+                task: SimpleTextDataset(
+                    self.train_texts[task], self.train_labels[task], self.tokenizer, self.token_length
+                ) for task in self.train_texts.keys()
+            }
+            train_loaders = {
+                task:
+                DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+                for task, dataset in datasets.items()
+            }
+            _datasets = {
+                task: SimpleTextDataset(
+                    self.val_texts[task], self.val_labels[task], self.tokenizer, self.token_length
+                ) for task in self.val_texts.keys()
+            }
+            val_loaders = {
+                task: DataLoader(_dataset, batch_size=self.batch_size, shuffle=False)
+                    for task, _dataset in _datasets.items()
+            }
 
             match self.approach:
                 case "lstm":
@@ -174,15 +181,19 @@ class TextAutoML:
                     )
                 case "transformer":
                     if TRANSFORMERS_AVAILABLE:
-                        self.model = AutoModelForSequenceClassification.from_pretrained(
-                            model_name, 
-                            num_labels=self.num_classes
+                        # Use actual num_classes from the datasets being used
+                        task_num_classes = self.num_classes
+
+                        backbone = AutoModel.from_pretrained(self.model_name)
+
+                        self.model = TransformerMultiTaskClassifier(
+                            backbone=backbone,
+                            task_num_classes=task_num_classes,
+                            num_bert_layers_to_unfreeze=self.num_bert_layers_to_unfreeze 
                         )
-                        freeze_layers(self.model, self.fraction_layers_to_finetune)  
                     else:
                         raise ValueError(
-                            "Need `AutoTokenizer`, `AutoModelForSequenceClassification` "
-                            "from `transformers` package."
+                            "Need transformer package."
                         )
                 case _:
                     raise ValueError("Unsupported approach or missing transformers.")
@@ -191,25 +202,67 @@ class TextAutoML:
         
         # Training and validating
         self.model.to(self.device)
-        assert dataset is not None, f"`dataset` cannot be None here!"
+        # assert dataset is not None, f"`dataset` cannot be None here!"
         # loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-        val_acc = self._train_loop(
-            train_loader,
-            val_loader,
+        return self._train_loop(
+            train_loaders,
+            val_loaders,
             load_path=load_path,
             save_path=save_path,
         )
 
-        return 1 - val_acc
 
     def _train_loop(
         self, 
-        train_loader: DataLoader,
-        val_loader: DataLoader,
+        train_loaders: dict[str, DataLoader],
+        val_loaders: dict[str, DataLoader],
         load_path: Path=None,
         save_path: Path=None,
-    ):
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+    ):    
+        #early_stop_patience = 2
+        best_val_accuracy = 0
+    
+        if self.approach == "transformer":
+            head_params = chain(
+                            self.model.shared_common_backbone.parameters(),
+                            self.model.classification_heads.parameters()
+                        )
+            optimizer_grouped_parameters = [
+                {"params": self.model.backbone.parameters(), "lr": self.bert_lr}, # BERT backbone LR
+                {"params": head_params, "lr": self.lr}                            # Custom head LR
+            ]  
+ 
+            optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=self.weight_decay)
+            num_training_steps = sum(len(loader) for loader in train_loaders.values()) * self.epochs
+            num_warmup_steps = int(num_training_steps * 0.1) 
+
+            self.scheduler = get_linear_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=num_training_steps
+            )
+        else:
+            hidden = [p for p in self.model.parameters() if p.ndim >= 2]
+            others = [p for p in self.model.parameters() if p.ndim < 2]
+            optimizer = SingleDeviceMuonWithAuxAdam(
+                [
+                    dict(
+                        params=hidden,
+                        use_muon=True,
+                        lr=self.lr,
+                        weight_decay=self.weight_decay,
+                        momentum=0.95,
+                    ),
+                    dict(
+                        params=others,
+                        use_muon=False,
+                        lr=self.lr,
+                        betas=[0.9, 0.999],
+                        eps=1e-06,
+                        weight_decay=self.weight_decay,
+                    ),
+                ]
+            )
         criterion = nn.CrossEntropyLoss()
 
         start_epoch = 0
@@ -220,49 +273,106 @@ class TextAutoML:
             optimizer.load_state_dict(_states["optimizer_state_dict"])
             start_epoch = _states["epoch"]
             logger.info(f"Resuming from checkpoint at {start_epoch}")
-
-        for epoch in range(start_epoch, self.epochs):            
+        for i, epoch in enumerate(range(start_epoch, self.epochs)):
+            train_iters = {task: iter(loader) for task, loader in train_loaders.items()}
             total_loss = 0
-            for batch in train_loader:
+            steps_in_accumulation = 0
+            while len(train_iters.keys()) > 0:
+                task = random.choice(list(train_iters))
+                try:
+                    batch = next(train_iters[task])
+                except StopIteration as e:
+                    logger.info(f"completed one iteration over {task} datset. {repr(e)}")
+                    train_iters.pop(task, None)
+                    continue
+                        
                 self.model.train()
                 optimizer.zero_grad()
 
                 # if isinstance(batch, dict):
-                if isinstance(self.model, AutoModelForSequenceClassification):
+                if isinstance(self.model, AutoModel):
                     inputs = {k: v.to(self.device) for k, v in batch.items()}
                     outputs = self.model(**inputs)
                     loss = outputs.loss
                     labels = inputs['labels']
                 else:
                     match self.approach:
-                        case "tfidf":
-                            x, y = batch[0].to(self.device), batch[1].to(self.device)
-                            outputs = self.model(x)
-                            labels = y
-                        case "lstm" | "transformer":
+                        case "lstm":
                             inputs = {k: v.to(self.device) for k, v in batch.items()}
-                            outputs = self.model(**inputs)
+                            outputs = self.model(**inputs, task=task)
+                            labels = inputs["labels"]
+                        case "transformer":
+                            inputs = {k: v.to(self.device) for k, v in batch.items()}
+                            model_inputs = {
+                                'input_ids': inputs['input_ids'],
+                                'attention_mask': inputs['attention_mask']
+                            }
+                            outputs = self.model(**model_inputs, task_name=task)
                             labels = inputs["labels"]
                         case _:
                             raise ValueError("Oops! Wrong approach.")
 
-                    outputs = outputs.logits if self.approach == "transformer" else outputs
+                    #outputs = outputs.logits if self.approach == "transformer" else outputs
                     loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
-                total_loss += loss.item()
 
-            logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
+                if self.scheduler:
+                    self.scheduler.step()
 
+                current_loss = loss.item()
+                if torch.isnan(loss) or not torch.isfinite(loss):
+                    logger.warning(f"NaN or infinite loss detected at epoch {epoch + 1}, step {steps_in_accumulation}")
+                    current_loss = 0.0  # Set to 0 to avoid NaN propagation
+                    
+                total_loss += current_loss
+                steps_in_accumulation += 1
+            
+            # Check for problematic total loss
+            if steps_in_accumulation == 0:
+                logger.warning(f"No training steps completed in epoch {epoch + 1}")
+                total_loss = 0.0
+            else:
+                avg_loss = total_loss / steps_in_accumulation if steps_in_accumulation > 0 else 0.0
+                logger.info(f"Epoch {epoch + 1}, Loss: {total_loss:.4f} (avg: {avg_loss:.4f})")
+            
             if self.val_texts:
-                val_preds, val_labels = self._predict(val_loader)
-                val_acc = accuracy_score(val_labels, val_preds)
-                logger.info(f"Epoch {epoch + 1}, Validation Accuracy: {val_acc:.4f}")
-
-        if self.val_texts:
-            val_preds, val_labels = self._predict(val_loader)
-            val_acc = accuracy_score(val_labels, val_preds)
-            logger.info(f"Epoch {epoch + 1}, Validation Accuracy: {val_acc:.4f}")
+                total_val_accuracys = 0.0
+                total_val_auc = 0.0
+                for task in train_loaders.keys():
+                    (val_preds, val_labels), val_prob = self._predict(val_loaders[task], task)
+                    val_acc = accuracy_score(val_labels, val_preds)
+                    logger.info(f"Epoch {epoch + 1}, Validation Accuracy for dataset {task} is: {val_acc:.4f}")
+                    n_classes = self.num_classes[task]
+                    y_true_binarized = label_binarize(val_labels, classes=np.arange(n_classes))
+                    
+                    if n_classes == 2:
+                        auc =  roc_auc_score(val_labels, val_prob[:, 1])
+                    else:
+                    # Multiclass classification - use one-vs-rest approach
+                        auc = custom_multiclass_roc_auc(y_true_binarized, val_prob)
+                    self.plotter.log_evaluation(
+                        epoch=epoch, task=task, val_accuracy=val_acc, 
+                        val_auc=auc,
+                    )
+                    total_val_accuracys += val_acc
+                    total_val_auc += auc
+                mean_val_accuracy = total_val_accuracys / len(train_loaders)
+                mean_val_auc = total_val_auc / len(train_loaders)
+                if mean_val_accuracy > best_val_accuracy:
+                    best_val_accuracy = mean_val_accuracy
+                    early_stop_patience = 2
+                else:
+                    early_stop_patience -= 1
+                    if early_stop_patience <= 0:
+                        logger.info(f"Early stopping at epoch {epoch + 1}. Best validation accuracy: {best_val_accuracy:.4f}")
+                        break
+                self.plotter.epoch_info(
+                    mean_val_accuracy=mean_val_accuracy, 
+                    mean_val_auc=mean_val_auc, 
+                    epoch=epoch,
+                    mean_train_loss=total_loss / steps_in_accumulation if steps_in_accumulation > 0 else float("nan"),
+                )
 
         if save_path is not None:
             save_path = Path(save_path) if not isinstance(save_path, Path) else save_path
@@ -277,59 +387,65 @@ class TextAutoML:
                 save_path / "checkpoint.pth"
             )   
         torch.cuda.empty_cache()
-        return val_acc or 0.0
+        return {
+            "objective_to_minimize": 1 - mean_val_accuracy if mean_val_accuracy else 0.0, 
+            "info_dict": {
+                "mean_val_auc": float(mean_val_auc) or 0.0, 
+                "epochs": i, 
+                "train_loss": total_loss / steps_in_accumulation if steps_in_accumulation > 0 else float("nan"),
+                }
+            }
 
-    def _predict(self, val_loader: DataLoader):
+    def _predict(self, val_loader: DataLoader, task):
         self.model.eval()
         preds = []
+        all_probs = []
         labels = []
         with torch.no_grad():
             for batch in val_loader:
-                if isinstance(self.model, AutoModelForSequenceClassification):
+                if isinstance(self.model, AutoModel):
                     inputs = {k: v.to(self.device) for k, v in batch.items() if k != 'labels'}
                     outputs = self.model(**inputs).logits
                     labels.extend(batch["labels"])
                 else:
                     match self.approach:
-                        case "tfidf":
-                            x, y = batch[0].to(self.device), batch[1].to(self.device)
-                            outputs = self.model(x)
-                            labels.extend(y)
-                        case "lstm" | "transformer":
+                        case "lstm":
                             inputs = {k: v.to(self.device) for k, v in batch.items()}
-                            outputs = self.model(**inputs)
-                            outputs = outputs.logits if self.approach == "transformer" else outputs
+                            outputs = self.model(**inputs, task=task)
+                            labels.extend(inputs["labels"])
+                        case "transformer":
+                            inputs = {k: v.to(self.device) for k, v in batch.items()}
+                            model_inputs = {
+                                'input_ids': inputs['input_ids'],
+                                'attention_mask': inputs['attention_mask']
+                            }
+                            outputs = self.model(**model_inputs, task_name=task)
                             labels.extend(inputs["labels"])
                         case _:
                             raise ValueError("Oops! Wrong approach.")
                             
-                preds.extend(torch.argmax(outputs, dim=1).cpu().numpy())
+                probs = torch.softmax(outputs, dim=1)
+                pred = torch.argmax(probs, dim=1)
+                preds.extend(pred.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
         
         if isinstance(preds, list):
             preds = [p.item() for p in preds]
             labels = [l.item() for l in labels]
-            return np.array(preds), np.array(labels)
+            return (np.array(preds), np.array(labels)), np.array(all_probs)
         else:
-            return preds.cpu().numpy(), labels.cpu().numpy()
+            return (preds.cpu().numpy(), labels.cpu().numpy()), all_probs.cpu().numpy()
 
 
-    def predict(self, test_data: pd.DataFrame | DataLoader) -> Tuple[np.ndarray, np.ndarray]:
+    def predict(self, test_data: pd.DataFrame | DataLoader, task) -> Tuple[np.ndarray, np.ndarray]:
 
         assert isinstance(test_data, DataLoader) or isinstance(test_data, pd.DataFrame), \
             f"Input data type: {type(test_data)}; Expected: pd.DataFrame | DataLoader"
 
         if isinstance(test_data, DataLoader):
-            return self._predict(test_data)
+            return self._predict(test_data, task)[0]
         
-        if self.approach == 'tfidf':
-            _X = self.vectorizer.transform(test_data['text'].tolist()).toarray()
-            _labels = test_data['label'].tolist()
-            _dataset = torch.utils.data.TensorDataset(
-                torch.tensor(_X, dtype=torch.float32),
-                torch.tensor(_labels)
-            )
-            _loader = DataLoader(_dataset, batch_size=self.batch_size, shuffle=True)
-        elif self.approach in ['lstm', 'transformer']:
+        if self.approach in ['lstm', 'transformer']:
             _dataset = SimpleTextDataset(
                 test_data['text'].tolist(),
                 test_data['label'].tolist(),
@@ -341,15 +457,31 @@ class TextAutoML:
             raise ValueError(f"Unrecognized approach: {self.approach}")
             # handling any possible tokenization
         
-        return self._predict(_loader)
+        return self._predict(_loader, task)
 
 
-def freeze_layers(model, fraction_layers_to_finetune: float=1.0) -> None:
-    total_layers = len(model.distilbert.transformer.layer)
-    _num_layers_to_finetune = int(fraction_layers_to_finetune * total_layers)
-    layers_to_freeze = total_layers - _num_layers_to_finetune
+def custom_multiclass_roc_auc(y_true_binarized: np.ndarray, y_prob: np.ndarray) -> float:
+    """Compute macro-averaged ROC AUC score (one-vs-rest) from scratch."""
+    def binary_auc(y_true, y_score):
+        # Sort scores and corresponding true labels
+        desc_score_indices = np.argsort(-y_score)
+        y_true_sorted = y_true[desc_score_indices]
+        y_score_sorted = y_score[desc_score_indices]
 
-    for layer in model.distilbert.transformer.layer[:layers_to_freeze]:
-        for param in layer.parameters():
-            param.requires_grad = False
-# end of file
+        tps = np.cumsum(y_true_sorted)
+        fps = np.cumsum(1 - y_true_sorted)
+
+        tpr = tps / tps[-1] if tps[-1] > 0 else np.zeros_like(tps)
+        fpr = fps / fps[-1] if fps[-1] > 0 else np.zeros_like(fps)
+
+        # Trapezoidal integration
+        return np.trapz(tpr, fpr)
+
+    n_classes = y_true_binarized.shape[1]
+    aucs = []
+    for i in range(n_classes):
+        if np.sum(y_true_binarized[:, i]) == 0:
+            continue  # Skip if this class doesn't appear
+        auc_i = binary_auc(y_true_binarized[:, i], y_prob[:, i])
+        aucs.append(auc_i)
+    return np.mean(aucs) if aucs else float("nan")

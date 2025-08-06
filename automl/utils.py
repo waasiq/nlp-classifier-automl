@@ -27,7 +27,11 @@ class SimpleTextDataset(Dataset):
             tokens = text.split()
             ids = [self.tokenizer.get(tok, 1) for tok in tokens[:self.max_length]]
             ids += [0] * (self.max_length - len(ids))
-            return torch.tensor(ids), torch.tensor(label)
+            return {
+                "input_ids": torch.tensor(ids), 
+                'labels': torch.tensor(label), 
+                'lengths': torch.tensor(len(tokens[:self.max_length]))
+            }
 
         elif TRANSFORMERS_AVAILABLE and hasattr(self.tokenizer, 'encode_plus'):
             encoded = self.tokenizer(
@@ -35,12 +39,16 @@ class SimpleTextDataset(Dataset):
                 truncation=True,
                 padding='max_length',
                 max_length=self.max_length,
+                # Set false for DistilBert as we don't need token type ids distilbert doesnt use this feature :) 
+                return_token_type_ids=False, 
+                return_attention_mask=True,
                 return_tensors='pt'
             )
             return {
                 'input_ids': encoded['input_ids'].squeeze(),
                 'attention_mask': encoded['attention_mask'].squeeze(),
-                'labels': torch.tensor(label)
+                'labels': torch.tensor(label),
+                'lengths': encoded['attention_mask'].squeeze().sum()  
             }
         else:
             raise ValueError("Tokenizer not defined or unsupported.")

@@ -1,0 +1,51 @@
+# Hydra configuration (train.yaml)
+
+# -----------------------------------------------------------------------------
+
+# Each key mirrors a CLI argument from the original argparse script.
+
+# Commented choices / defaults replicate argparse behaviour.
+
+# -----------------------------------------------------------------------------
+
+# Dataset & paths
+
+# ---------------
+defaults:
+    - _self_
+    - model_config: medium
+    - neps: transformer
+
+seed: 42
+dataset: ag_news       # choices: [ag_news, imdb, amazon, dbpedia, yelp]
+output_path: ./results/      # if null ➜ "./results/dataset=${dataset}/seed=${seed}"
+load_path: null        # resume checkpoint
+data_path: 'data'        # if null ➜ "./.data"
+val_size: 0.1
+
+# Training approach
+approach: transformer  # choices: [lstm, transformer]
+
+# Data & training hyper‑params
+vocab_size: 1000
+token_length: 256
+epochs: 3
+batch_size: 32
+lr: 2e-4
+weight_decay: 0.1
+data_fraction: 1.0     # (0, 1]
+
+# Transformer Model‑specific settings
+bert_lr: 0.00005          # bert_lr
+num_bert_layers_to_unfreeze: 2  # num_bert_layers_to_unfreeze
+model_name: "distilbert-base-cased"  # choices: [distilbert-base-cased, distilroberta-base, roberta-base]
+
+# LSTM Model‑specific settings
+lstm_emb_dim: 64          # lstm_emb_dim
+lstm_hidden_dim: 64       # lstm_hidden_dim
+
+ffnn_hidden_layer_dim: 64
+
+# Multi‑task learning
+
+is_mtl: true

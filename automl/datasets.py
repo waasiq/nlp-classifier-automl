@@ -6,7 +6,9 @@ import numpy as np
 from typing import Tuple, Optional, Dict, Any
 import string
 from sklearn.model_selection import train_test_split
-
+from html import unescape
+from bs4 import BeautifulSoup
+import re
 
 class BaseTextDataset(ABC):
     """Base class for text datasets."""
@@ -34,6 +36,26 @@ class BaseTextDataset(ABC):
         text = text.translate(str.maketrans('', '', string.punctuation))
         # Remove extra whitespace
         text = ' '.join(text.split())
+        return self.remove_markdowns(text)
+    
+    def remove_markdowns(self, raw_text: str) -> str:
+        """
+        Remove markdown tags from the given text.
+        
+        Args:
+            text (str): The input text containing markdown tags.
+            
+        Returns:
+            str: The text with markdown tags removed.
+        """
+        fixed = re.sub(r'#(\d+);', r'&#\1;', raw_text)
+        text = unescape(fixed)
+        # Remove HTML tags
+        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+        # Remove markdown specific characters
+        text = text.replace(r'\$', '$')   # \$
+        text = re.sub(r"\s+([\'.,;:!?])", r'\1', text)
+        text = re.sub(r'\s+', ' ', text)  # collapse spaces
         return text
     
     def create_dataloaders(
@@ -148,5 +170,24 @@ class DBpediaDataset(BaseTextDataset):
         # Crucial handling of negative class label
         train_df['label'] = train_df['label'].replace(-1, self.get_num_classes() - 1)
         test_df['label'] = test_df['label'].replace(-1, self.get_num_classes() - 1)
+
+        return train_df, test_df
+
+class YelpDataset(BaseTextDataset):
+    """Yelp ontology classification dataset (14 classes)."""
+    
+    def get_num_classes(self) -> int:
+        return 5
+    
+    def load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Load DBpedia ontology data."""
+        train_path = self.data_path / "yelp" / "train.csv"
+        test_path = self.data_path / "yelp" / "test.csv"
+        
+        if train_path.exists() and test_path.exists():
+            train_df = pd.read_csv(train_path)
+            test_df = pd.read_csv(test_path)
+        else:
+            raise FileNotFoundError(f"Data files not found at {train_path}, generating dummy data...")
 
         return train_df, test_df

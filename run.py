@@ -14,34 +14,82 @@ python run.py \
 
 """
 from __future__ import annotations
-
-import argparse
+import sys
+import math
 import logging
 import numpy as np
+import copy
 from pathlib import Path
 from sklearn.metrics import accuracy_score, classification_report
 import yaml
-
-from automl.core import TextAutoML
+import pandas as pd
+from wandb_log import get_logger
+from automl.core import TextAutoML, custom_multiclass_roc_auc
+from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import label_binarize
 from automl.datasets import (
     AGNewsDataset,
     AmazonReviewsDataset,
     DBpediaDataset,
     IMDBDataset,
+    YelpDataset,
 )
+from hydra import compose, initialize
+from omegaconf import OmegaConf
+import copy 
 
 logger = logging.getLogger(__name__)
 
-FINAL_TEST_DATASET=...  # TBA later
+FINAL_TEST_DATASET= "yelp"
 
+# function load the dataset and create dfs
+def load_dataset(dataset: str, data_path: Path, val_size: float, seed: int, is_mtl: bool = False):
+    match dataset:
+        case "ag_news":
+            dataset_class = AGNewsDataset
+        case "imdb":
+            dataset_class = IMDBDataset
+        case "amazon":
+            dataset_class = AmazonReviewsDataset
+        #case "dbpedia":
+        #    dataset_class = DBpediaDataset
+        #case "yelp":
+        #    dataset_class = YelpDataset
+        case _:
+            raise ValueError(f"Invalid dataset: {dataset}")
+    
+    dataset_classes = {dataset: dataset_class}
+
+    if is_mtl:
+        dataset_classes = {
+            "ag_news": AGNewsDataset,
+            "imdb": IMDBDataset,
+            "amazon": AmazonReviewsDataset,
+            #"dbpedia": DBpediaDataset,
+            #"yelp": YelpDataset,
+        }
+        dataset = "mtl"
+
+    
+    data_path = Path(data_path) if isinstance(data_path, str) else data_path
+    data_infos = {dataset: dataset_class(data_path).create_dataloaders(val_size=val_size, random_state=seed) for dataset, dataset_class in dataset_classes.items()}
+
+    train_dfs = {dataset: data_info['train_df'] for dataset, data_info in data_infos.items()}
+    val_dfs = {dataset: data_info.get('val_df', None) for dataset, data_info in data_infos.items()}
+    test_dfs = {dataset: data_info['test_df'] for dataset, data_info in data_infos.items()}
+    num_classes = {dataset: data_info['num_classes'] for dataset, data_info in data_infos.items()}
+    return dataset_classes, train_dfs, val_dfs, test_dfs, num_classes
 
 def main_loop(
-        dataset: str,
+        train_dfs: dict[str, pd.DataFrame],
+        val_dfs: dict[str, pd.DataFrame],
+        test_dfs: dict[str, pd.DataFrame],
+        num_classes: dict[str, int],
+        dataset_classes: dict[str, str],
+        data_fraction: float,
         output_path: Path,
-        data_path: Path,
         seed: int,
         approach: str,
-        val_size: float = 0.2,
         vocab_size: int = 10000,
         token_length: int = 128,
         epochs: int = 5,
@@ -51,47 +99,55 @@ def main_loop(
         ffnn_hidden: int = 128,
         lstm_emb_dim: int = 128,
         lstm_hidden_dim: int = 128,
-        fraction_layers_to_finetune: float = 1.0,
-        data_fraction: int = 1.0,
         load_path: Path = None,
+        pipeline_directory: Path | None = None,
+        model_name: str = "distilbert-base-uncased",
+        bert_lr: float = 0.00005,
+        num_bert_layers_to_unfreeze: int = 2, 
     ) -> None:
-    match dataset:
-        case "ag_news":
-            dataset_class = AGNewsDataset
-        case "imdb":
-            dataset_class = IMDBDataset
-        case "amazon":
-            dataset_class = AmazonReviewsDataset
-        case "dbpedia":
-            dataset_class = DBpediaDataset
-        case _:
-            raise ValueError(f"Invalid dataset: {dataset}")
+    train_dfs = copy.deepcopy(train_dfs)
+
+    run_name = f"{''.join(dataset_classes.keys())}_config_{pipeline_directory}_{np.random.randint(100000, 999999)}"    
+    log_dir = pipeline_directory if pipeline_directory is not None else output_path / "logs"
+    plotter = get_logger(log_dir=log_dir, run_name=run_name)
 
     logger.info("Fitting Text AutoML")
 
-    # You do not need to follow this setup or API it's merely here to provide
-    # an example of how your AutoML system could be used.
-    # As a general rule of thumb, you should **never** pass in any
-    # test data to your AutoML solution other than to generate predictions.
+    np.random.seed(seed)
+    train_dfs = copy.deepcopy(train_dfs)
+    n_class_samples = round(sum(len(v) for v in train_dfs.values()) * data_fraction / len(train_dfs))
+    min_samples_per_dataset = 10  
+    n_class_samples = max(n_class_samples, min_samples_per_dataset)
+    
+    for dataset, train_df in train_dfs.items():
+        actual_samples = min(n_class_samples, len(train_df))
+        if actual_samples == 0:
+            logger.warning(f"No training samples available for dataset {dataset}. Skipping...")
+            continue
+            
+        _subsample = np.random.choice(
+            list(range(len(train_df))),
+            size=actual_samples,
+            replace=len(train_df) < actual_samples,
+        )
+        train_dfs[dataset] = train_df.iloc[_subsample]
 
-    # Get the dataset and create dataloaders
-    data_path = Path(data_path) if isinstance(data_path, str) else data_path
-    data_info = dataset_class(data_path).create_dataloaders(val_size=val_size, random_state=seed)
-    train_df = data_info['train_df']
+    total_train_samples = sum(len(df) for df in train_dfs.values())
+    if total_train_samples == 0:
+        logger.error("No training samples available across all datasets. Cannot proceed with training.")
+        return float('inf')  
     
-    _subsample = np.random.choice(
-        list(range(len(train_df))),
-        size=int(data_fraction * len(train_df)),
-        replace=False,
-    )
-    train_df = train_df.iloc[_subsample]
-    
-    val_df = data_info.get('val_df', None)
-    test_df = data_info['test_df']
-    num_classes = data_info['num_classes']
+    min_samples_per_batch = batch_size * 2  
+    if total_train_samples < min_samples_per_batch:
+        logger.warning(f"Very small training set ({total_train_samples} samples) relative to batch size ({batch_size}). This may cause training instability.")
+        effective_batch_size = min(batch_size, max(1, total_train_samples // 4))
+        logger.info(f"Reducing batch size from {batch_size} to {effective_batch_size} for stability.")
+        batch_size = effective_batch_size
+
     logger.info(
-        f"Train size: {len(train_df)}, Validation size: {len(val_df)}, Test size: {len(test_df)}"
+        [f"Train size: {len(train_dfs[dataset])}, Validation size: {len(val_dfs[dataset])}, Test size: {len(test_dfs[dataset])}" for dataset in dataset_classes.keys()]
     )
+    plotter.add_data_distribution(train_dfs, val_dfs, test_dfs)
     logger.info(f"Number of classes: {num_classes}")
 
     # Initialize the TextAutoML instance with the best parameters
@@ -107,13 +163,16 @@ def main_loop(
         ffnn_hidden=ffnn_hidden,
         lstm_emb_dim=lstm_emb_dim,
         lstm_hidden_dim=lstm_hidden_dim,
-        fraction_layers_to_finetune=fraction_layers_to_finetune,
+        model_name=model_name,
+        plotter=plotter,
+        bert_lr=bert_lr,
+        num_bert_layers_to_unfreeze=num_bert_layers_to_unfreeze,
     )
 
     # Fit the AutoML model on the training and validation datasets
-    val_err = automl.fit(
-        train_df,
-        val_df,
+    user_result = automl.fit(
+        train_dfs,
+        val_dfs,
         num_classes=num_classes,
         load_path=load_path,
         save_path=output_path,
@@ -121,194 +180,111 @@ def main_loop(
     logger.info("Training complete")
 
     # Predict on the test set
-    test_preds, test_labels = automl.predict(test_df)
+    val_err = user_result.get("objective_to_minimize", math.inf)
+    test_roc_auc_accumulated = 0.0
+    test_n = 0
+    all_test_preds = {}  # Dictionary to store predictions for each task
 
-    # Write the predictions of X_test to disk
-    logger.info("Writing predictions to disk")
-    with (output_path / "score.yaml").open("w") as f:
-        yaml.safe_dump({"val_err": float(val_err)}, f)
-    logger.info(f"Saved validataion score at {output_path / 'score.yaml'}")
-    with (output_path / "test_preds.npy").open("wb") as f:
-        np.save(f, test_preds)
-    logger.info(f"Saved tet prediction at {output_path / 'test_preds.npy'}")
+    # --- Main Evaluation Loop ---
+    for task, test_df in test_dfs.items():
+        # Get predictions for the current task
+        (test_preds, test_labels), test_probs = automl.predict(test_df, task)
+        all_test_preds[task] = test_preds # Store predictions for this task
 
-    # In case of running on the final exam data, also add the predictions.npy
-    # to the correct location for auto evaluation.
-    if dataset == FINAL_TEST_DATASET: 
+        # Save predictions for this specific task
+        task_output_path = output_path / task
+        task_output_path.mkdir(parents=True, exist_ok=True)
+        with (task_output_path / "test_preds.npy").open("wb") as f:
+            np.save(f, test_preds)
+        logger.info(f"Saved test predictions for {task} at {task_output_path / 'test_preds.npy'}")
+
+        # Log metrics if labels are available
+        logger.info(f"--- Evaluating task: {task} ---")
+        if not np.isnan(test_labels).any():
+            acc = accuracy_score(test_labels, test_preds)
+            logger.info(f"Accuracy on test set for {task}: {acc}")
+            logger.info(f"Classification Report for {task}:\n{classification_report(test_labels, test_preds)}")
+
+            n_classes = num_classes[task]
+            y_true_binarized = label_binarize(test_labels, classes=np.arange(n_classes))
+            
+            if n_classes == 2:
+                auc = roc_auc_score(test_labels, test_probs[:, 1])
+            else:
+                auc = custom_multiclass_roc_auc(y_true_binarized, test_probs)
+            
+            # Accumulate AUC score for tasks that are not the final hold-out set
+            if task != FINAL_TEST_DATASET:
+                test_roc_auc_accumulated += auc
+                test_n += 1
+            
+            user_result["info_dict"][f"{task}_roc_auc_score"] = float(auc)
+        else:
+            logger.info(f"No test labels available for dataset '{task}'")
+    
+    # --- Post-Loop Finalization ---
+
+    # Calculate average ROC AUC for all evaluated tasks
+    if test_n > 0:
+        average_roc_auc = test_roc_auc_accumulated / test_n
+        user_result["info_dict"]["test_mean_roc_auc"] = float(average_roc_auc)
+
+    # Save predictions for the final exam dataset, if it exists
+    if FINAL_TEST_DATASET in all_test_preds:
+        final_preds = all_test_preds[FINAL_TEST_DATASET]
         test_output_path = output_path / "predictions.npy"
         test_output_path.parent.mkdir(parents=True, exist_ok=True)
         with test_output_path.open("wb") as f:
-            np.save(f, test_preds)
+            np.save(f, final_preds)
+        logger.info(f"Saved final submission predictions to {test_output_path}")
 
-    # Check if test_labels has missing data
-    if not np.isnan(test_labels).any():
-        acc = accuracy_score(test_labels, test_preds)
-        logger.info(f"Accuracy on test set: {acc}")
-        with (output_path / "score.yaml").open("a+") as f:
-            yaml.safe_dump({"test_err": float(1-acc)}, f)
-        
-        # Log detailed classification report for better insight
-        logger.info("Classification Report:")
-        logger.info(f"\n{classification_report(test_labels, test_preds)}")
-    else:
-        # This is the setting for the exam dataset, you will not have access to the labels
-        logger.info(f"No test labels available for dataset '{dataset}'")
+    # Write the final validation error score once
+    with (output_path / "score.yaml").open("w") as f:
+        yaml.safe_dump({"val_err": float(val_err)}, f)
+    logger.info(f"Saved final validation score at {output_path / 'score.yaml'}")
 
-    return val_err
-
+    plotter.close()
+    return user_result
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        required=True,
-        help="The name of the dataset to run on.",
-        choices=["ag_news", "imdb", "amazon", "dbpedia",]
+    overrides = sys.argv[1:]
+    with initialize(config_path="./configs", version_base="1.3"):
+        cfg = compose(config_name="train", overrides=overrides)
+    args = OmegaConf.to_object(cfg)
+    out_dir = Path(args["output_path"])
+    out_dir.mkdir(parents=True, exist_ok=True) 
+    logging.basicConfig(level=logging.INFO, filename=out_dir / "run.log", 
+                        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S")
+    # load datasets:
+    dataset_classes, train_dfs, val_dfs, test_dfs, num_classes = load_dataset(
+        dataset=args["dataset"],
+        data_path=Path(args["data_path"]).absolute(),
+        seed=args["seed"],
+        val_size= args["val_size"],
+        is_mtl=args["is_mtl"]
     )
-    parser.add_argument(
-        "--output-path",
-        type=Path,
-        default=None,
-        help=(
-            "The path to save the predictions to."
-            " By default this will just save to the cwd as `./results`."
-        )
-    )
-    parser.add_argument(
-        "--load-path",
-        type=Path,
-        default=None,
-        help="The path to resume checkpoint from."
-    )
-    parser.add_argument(
-        "--data-path",
-        type=Path,
-        default=None,
-        help=(
-            "The path to laod the data from."
-            " By default this will look up cwd for `./.data/`."
-        )
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help=(
-            "Random seed for reproducibility if you are using any randomness,"
-            " i.e. torch, numpy, pandas, sklearn, etc."
-        )
-    )
-    parser.add_argument(
-        "--approach",
-        type=str,
-        default="transformer",
-        choices=["tfidf", "lstm", "transformer"],
-        help=(
-            "The approach to use for the AutoML system. "
-            "Options are 'tfidf', 'lstm', or 'transformer'."
-        )
-    )
-    parser.add_argument(
-        "--vocab-size",
-        type=int,
-        default=1000,
-        help="The size of the vocabulary to use for the text dataset."
-    )
-    parser.add_argument(
-        "--token-length",
-        type=int,
-        default=128,
-        help="The maximum length of tokens to use for the text dataset."
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=5,
-        help="The number of epochs to train the model for."
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=32,
-        help="The batch size to use for training and evaluation."
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=0.01,
-        help="The learning rate to use for the optimizer."
-    )
-    parser.add_argument(
-        "--weight-decay",
-        type=float,
-        default=0.01,
-        help="The weight decay to use for the optimizer."
-    )
-
-    parser.add_argument(
-        "--lstm-emb-dim",
-        type=int,
-        default=64,
-        help="The embedding dimension to use for the LSTM model."
-    )
-
-    parser.add_argument(
-        "--lstm-hidden-dim",
-        type=int,
-        default=64,
-        help="The hidden size to use for the LSTM model."
-    )
-
-    parser.add_argument(
-        "--ffnn-hidden-layer-dim",
-        type=int,
-        default=64,
-        help="The hidden size to use for the model."
-    )
-
-    parser.add_argument(
-        "--data-fraction",
-        type=float,
-        default=1,
-        help="Subsampling of training set, in fraction (0, 1]."
-    )
-    args = parser.parse_args()
-
-    logger.info(f"Running text dataset {args.dataset}\n{args}")
-
-    if args.output_path is None:
-        args.output_path =  (
-            Path.cwd().absolute() / 
-            "results" / 
-            f"dataset={args.dataset}" / 
-            f"seed={args.seed}"
-        )
-    if args.data_path is None:
-        args.data_path = Path.cwd().absolute() / ".data"
-
-    args.output_path = Path(args.output_path).absolute()
-    args.output_path.mkdir(parents=True, exist_ok=True)
-
-    logging.basicConfig(level=logging.INFO, filename=args.output_path / "run.log")
-
     main_loop(
-        dataset=args.dataset,
-        output_path=Path(args.output_path).absolute(),
-        data_path=Path(args.data_path).absolute(),
-        seed=args.seed,
-        approach=args.approach,
-        vocab_size=args.vocab_size,
-        token_length=args.token_length,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        ffnn_hidden=args.ffnn_hidden_layer_dim,
-        lstm_emb_dim=args.lstm_emb_dim,
-        lstm_hidden_dim=args.lstm_hidden_dim,
-        data_fraction=args.data_fraction,
-        load_path=Path(args.load_path) if args.load_path is not None else None
+        train_dfs=train_dfs,
+        val_dfs=val_dfs,
+        test_dfs=test_dfs,
+        num_classes=num_classes,
+        dataset_classes=dataset_classes,
+        data_fraction=args["data_fraction"],
+        output_path=out_dir.absolute(),
+        seed=args["seed"],
+        approach=args["approach"],
+        vocab_size=args["model_config"]["vocab_size"],
+        token_length=args["token_length"],
+        epochs=args["epochs"],
+        batch_size=args["batch_size"],
+        lr=args["lr"],
+        weight_decay=args["weight_decay"],
+        ffnn_hidden=args["ffnn_hidden_layer_dim"],
+        lstm_emb_dim=args["model_config"]["lstm_emb_dim"],
+        lstm_hidden_dim=args["model_config"]["lstm_hidden_dim"],
+        load_path=Path(args["load_path"]) if args["load_path"] else None,
+        model_name=args["model_name"],
+        bert_lr=args["bert_lr"],
+        num_bert_layers_to_unfreeze=args["num_bert_layers_to_unfreeze"]
     )
-# end of file
